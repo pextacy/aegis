@@ -1,7 +1,9 @@
+import { zeroAddress } from "viem";
 import type { Address, Hex, PublicClient } from "viem";
 
 import {
   contractHandles,
+  wiredHandles,
   type Amendment,
   type PaymentRequest,
   type Policy,
@@ -26,6 +28,16 @@ import {
 /** Multicall3 handles far more, but a batch this size keeps one call under any RPC's response cap. */
 const BATCH_SIZE = 100;
 
+/**
+ * One entry of an `allowFailure` multicall.
+ *
+ * viem infers this precisely for a homogeneous, statically known call list. The
+ * lists here are built at runtime from an id range, so the shape is named once
+ * and the results are cast at the point of use rather than fought with generics
+ * at every call site.
+ */
+type MulticallEntry = { status: "success"; result: unknown } | { status: "failure"; error: Error };
+
 function idRange(nextId: bigint): bigint[] {
   const ids: bigint[] = [];
   for (let id = 1n; id < nextId; id += 1n) ids.push(id);
@@ -47,7 +59,7 @@ async function batchRead<T>(
   const found = new Map<string, T>();
 
   for (const group of chunk(ids, BATCH_SIZE)) {
-    const results = await client.multicall({
+    const results = (await client.multicall({
       allowFailure: true,
       contracts: group.map((id) => ({
         address: handle.address,
@@ -55,7 +67,7 @@ async function batchRead<T>(
         functionName,
         args: [id],
       })) as never,
-    });
+    })) as MulticallEntry[];
 
     results.forEach((result, index) => {
       const id = group[index];
@@ -127,6 +139,41 @@ export async function rolesOf(client: PublicClient, policyId: bigint, account: A
     functionName: "rolesOf",
     args: [policyId, account],
   })) as number;
+}
+
+/**
+ * One address's role mask on many policies at once.
+ *
+ * Keyed by policy id as a string, because a bigint key would compare by
+ * identity in a Map.
+ */
+export async function rolesForAccount(
+  client: PublicClient,
+  account: Address,
+  policyIds: bigint[],
+): Promise<Map<string, number>> {
+  const { policyEngine } = contractHandles();
+  const masks = new Map<string, number>();
+
+  for (const group of chunk(policyIds, BATCH_SIZE)) {
+    const results = (await client.multicall({
+      allowFailure: true,
+      contracts: group.map((policyId) => ({
+        address: policyEngine.address,
+        abi: policyEngine.abi,
+        functionName: "rolesOf",
+        args: [policyId, account],
+      })) as never,
+    })) as MulticallEntry[];
+
+    results.forEach((result, index) => {
+      const policyId = group[index];
+      if (policyId === undefined || result.status !== "success") return;
+      masks.set(policyId.toString(), Number(result.result));
+    });
+  }
+
+  return masks;
 }
 
 /** The guardians of a policy — the cosigner set the TEE instruction carries. */
@@ -275,6 +322,77 @@ export async function quoteUsd(client: PublicClient, amountDrops: bigint): Promi
     args: [amountDrops],
   });
   return result as bigint;
+}
+
+// --- Wiring ----------------------------------------------------------------
+
+/**
+ * Which signer and which verifier the contracts actually trust.
+ *
+ * Both are set once and exposed as public getters, so this is read from the
+ * chain rather than configured. An address of zero is a real state — phase 4's
+ * verifier is wired after the phase 3 signer — and the dashboard says so instead
+ * of hiding a half-built deployment behind an empty screen.
+ */
+export type Wiring = {
+  registryInstructionSender: Address;
+  registryExecutionVerifier: Address;
+  controllerInstructionSender: Address;
+  controllerExecutionVerifier: Address;
+  /** The FCC extension id, once `setExtensionId()` has found it. */
+  extensionId: bigint | null;
+};
+
+/** Whether an address is the zero address, i.e. not wired. */
+export function isWired(address: Address | undefined): boolean {
+  return address !== undefined && address.toLowerCase() !== zeroAddress;
+}
+
+export async function readWiring(client: PublicClient): Promise<Wiring> {
+  const { treasuryRegistry, paymentController } = contractHandles();
+
+  const [registryInstructionSender, registryExecutionVerifier, controllerInstructionSender, controllerExecutionVerifier] =
+    (await Promise.all([
+      client.readContract({ ...treasuryRegistry, functionName: "instructionSender" }),
+      client.readContract({ ...treasuryRegistry, functionName: "executionVerifier" }),
+      client.readContract({ ...paymentController, functionName: "instructionSender" }),
+      client.readContract({ ...paymentController, functionName: "executionVerifier" }),
+    ])) as [Address, Address, Address, Address];
+
+  let extensionId: bigint | null = null;
+  if (isWired(registryInstructionSender)) {
+    try {
+      extensionId = (await client.readContract({
+        ...wiredHandles(registryInstructionSender, zeroAddress).instructionSender,
+        functionName: "extensionId",
+      })) as bigint;
+    } catch {
+      // `extensionId()` reverts until setExtensionId() has scanned the registry.
+      // That is a stage of deployment, not a failure, and the panel reports it.
+      extensionId = null;
+    }
+  }
+
+  return {
+    registryInstructionSender,
+    registryExecutionVerifier,
+    controllerInstructionSender,
+    controllerExecutionVerifier,
+    extensionId,
+  };
+}
+
+/** The reference a settled payment must carry in its XRPL memo. */
+export async function requestReference(
+  client: PublicClient,
+  executionVerifier: Address,
+  requestId: bigint,
+): Promise<Hex> {
+  return (await client.readContract({
+    ...wiredHandles(zeroAddress, executionVerifier).executionVerifier,
+    functionName: "requestReference",
+    args: [requestId],
+  })) as Hex;
 }
 
 /** The digest the TEE recomputes before it will sign. */

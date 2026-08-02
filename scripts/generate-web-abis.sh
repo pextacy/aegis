@@ -24,6 +24,8 @@ CONTRACTS=(
     "PolicyEngine:policyEngineAbi"
     "TreasuryRegistry:treasuryRegistryAbi"
     "PaymentController:paymentControllerAbi"
+    "AegisInstructionSender:aegisInstructionSenderAbi"
+    "ExecutionVerifier:executionVerifierAbi"
 )
 
 echo "generate-web-abis: building contracts"

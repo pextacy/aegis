@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #0a0c10;
+  --color-surface: #11141a;
+  --color-raised: #171b22;
+  --color-line: #232936;
+  --color-line-strong: #333c4d;
+  --color-ink: #e9ecf1;
+  --color-muted: #98a2b3;
+  --color-faint: #6a7382;
+  --color-accent: #d9a441;
+  --color-accent-dim: #4a3a1b;
+  --color-good: #43b581;
+  --color-warn: #d9a441;
+  --color-bad: #ef6f6f;
+  --color-info: #6ea8fe;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Figures are read against each other constantly in this product — an amount in
+   drops next to the same amount in XRP next to a policy ceiling. Tabular
+   numerals keep the columns aligned so a difference in magnitude is visible
+   without reading every digit. */
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: var(--color-accent-dim);
+}
+
+input,
+select,
+textarea {
+  color-scheme: dark;
+}

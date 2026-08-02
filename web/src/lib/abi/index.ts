@@ -4,3 +4,5 @@
 export { policyEngineAbi } from "./policyEngine";
 export { treasuryRegistryAbi } from "./treasuryRegistry";
 export { paymentControllerAbi } from "./paymentController";
+export { aegisInstructionSenderAbi } from "./aegisInstructionSender";
+export { executionVerifierAbi } from "./executionVerifier";

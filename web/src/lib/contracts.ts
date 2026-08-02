@@ -1,6 +1,12 @@
 import type { Address, Hex } from "viem";
 
-import { paymentControllerAbi, policyEngineAbi, treasuryRegistryAbi } from "./abi";
+import {
+  aegisInstructionSenderAbi,
+  executionVerifierAbi,
+  paymentControllerAbi,
+  policyEngineAbi,
+  treasuryRegistryAbi,
+} from "./abi";
 import { requireConfig } from "./config";
 
 /**
@@ -86,5 +92,28 @@ export function contractHandles(): ContractHandles {
   };
 }
 
+/**
+ * Handles for the two contracts whose addresses are discovered rather than
+ * configured.
+ *
+ * `AegisInstructionSender` and `ExecutionVerifier` are wired into the registry
+ * and the controller once each, and both expose the wiring as a public getter.
+ * Reading it from the chain means the dashboard cannot be pointed at a signer or
+ * a verifier that the contracts do not actually trust — and an unwired address
+ * shows up as exactly that, rather than as a missing environment variable.
+ */
+export function wiredHandles(instructionSender: Address, executionVerifier: Address) {
+  return {
+    instructionSender: { address: instructionSender, abi: aegisInstructionSenderAbi },
+    executionVerifier: { address: executionVerifier, abi: executionVerifierAbi },
+  } as const;
+}
+
 /** Every Aegis ABI, for error decoding and coverage checks. */
-export const ALL_ABIS = [policyEngineAbi, treasuryRegistryAbi, paymentControllerAbi] as const;
+export const ALL_ABIS = [
+  policyEngineAbi,
+  treasuryRegistryAbi,
+  paymentControllerAbi,
+  aegisInstructionSenderAbi,
+  executionVerifierAbi,
+] as const;

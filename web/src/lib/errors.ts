@@ -1,4 +1,4 @@
-import { BaseError, ContractFunctionRevertedError, UserRejectedRequestError, type Hex } from "viem";
+import { BaseError, ContractFunctionRevertedError, hexToString, UserRejectedRequestError, type Hex } from "viem";
 
 import { formatDuration, formatTimestamp, formatUsd, shortHex } from "./format";
 import { bytes32ToClassicAddress } from "./xrpl-address";
@@ -40,6 +40,17 @@ function bigintAt(args: readonly unknown[], index: number): bigint {
 function stringAt(args: readonly unknown[], index: number): string {
   const value = args[index];
   return typeof value === "string" ? value : String(value ?? "");
+}
+
+/** A short ASCII `bytes32` — op commands, attestation types, source ids. */
+function bytes32Text(value: unknown): string {
+  if (typeof value !== "string") return "an unreadable value";
+  try {
+    const text = hexToString(value as Hex, { size: 32 }).replace(/\0+$/, "");
+    return text === "" ? shortHex(value) : text;
+  } catch {
+    return shortHex(value);
+  }
 }
 
 function destinationLabel(word: unknown, tag: unknown): string {
@@ -248,6 +259,11 @@ const EXPLANATIONS: Record<string, Explainer> = {
     rule: "PaymentController — propose",
     detail: "A payment of zero drops would consume a sequence number and move nothing.",
   }),
+  DestinationNotLeftAligned: (args) => ({
+    title: "Destination is not a left-aligned AccountID",
+    rule: "PaymentController — destination encoding",
+    detail: `${shortHex(stringAt(args, 0))} has bytes set below the first 20, so it is not an AccountID left-aligned in a word. A right-aligned value would serialise to a different XRPL account than the one intended.`,
+  }),
   ZeroDestination: () => ({
     title: "Destination is empty",
     rule: "PaymentController — propose",
@@ -328,6 +344,129 @@ const EXPLANATIONS: Record<string, Explainer> = {
     title: "Not enough approvals",
     rule: "Tier approval threshold",
     detail: `${bigintAt(args, 0)} of ${bigintAt(args, 1)} required approvals have been collected.`,
+  }),
+
+  // --- AegisInstructionSender --------------------------------------------
+  NotPaymentController: () => ({
+    title: "Not the payment controller",
+    rule: "AegisInstructionSender — signing authority",
+    detail:
+      "Only PaymentController may ask the TEE for a signature, and it only does so after the whole policy check passed a second time.",
+  }),
+  NotResultSubmitter: () => ({
+    title: "Not the result submitter",
+    rule: "AegisInstructionSender — result authority",
+    detail: "TEE results arrive from the nominated submitter address. Anything else is refused.",
+  }),
+  PaymentControllerNotSet: () => ({
+    title: "The payment controller is not wired",
+    rule: "Deployment wiring",
+    detail: "The instruction sender has no controller to report a signature to.",
+  }),
+  UnknownInstruction: (args) => ({
+    title: "Unknown instruction",
+    rule: "AegisInstructionSender — instruction bookkeeping",
+    detail: `No instruction with id ${shortHex(stringAt(args, 0))} is pending. A result for one that was never sent is refused.`,
+  }),
+  InstructionAlreadyConsumed: (args) => ({
+    title: "Instruction already answered",
+    rule: "AegisInstructionSender — replay protection",
+    detail: `Instruction ${shortHex(stringAt(args, 0))} has already been consumed. A result cannot be replayed.`,
+  }),
+  WrongCommand: (args) => ({
+    title: "Result answers the wrong command",
+    rule: "AegisInstructionSender — command matching",
+    detail: `A ${bytes32Text(args[0])} result arrived for an instruction that asked for ${bytes32Text(args[1])}.`,
+  }),
+
+  // --- ExecutionVerifier -------------------------------------------------
+  ProofNotVerified: () => ({
+    title: "The FDC proof does not verify",
+    rule: "ExecutionVerifier — FDC verification",
+    detail:
+      "Flare's FDC verification contract rejected this Merkle proof. Nothing about the payment is taken on trust; a proof that does not verify moves no state.",
+  }),
+  WrongAttestationType: (args) => ({
+    title: "Wrong attestation type",
+    rule: "ExecutionVerifier — attestation type",
+    detail: `The proof attests ${bytes32Text(args[0])}, and this entry point takes ${bytes32Text(args[1])}.`,
+  }),
+  WrongSource: (args) => ({
+    title: "Wrong chain",
+    rule: "ExecutionVerifier — source id",
+    detail: `The proof is about ${bytes32Text(args[0])}, and this deployment settles on ${bytes32Text(args[1])}.`,
+  }),
+  NotAwaitingSettlement: (args) => ({
+    title: "Not waiting for settlement",
+    rule: "ExecutionVerifier — request state",
+    detail: `A settlement proof only applies to a request the enclave has signed. This one is ${stateName(args[0])}.`,
+  }),
+  NotDispatched: (args) => ({
+    title: "Never dispatched",
+    rule: "ExecutionVerifier — request state",
+    detail: `A non-execution proof only applies to a request that was dispatched. This one is ${stateName(args[0])}.`,
+  }),
+  ReferenceMismatch: (args) => ({
+    title: "The proof is for a different request",
+    rule: "ExecutionVerifier — payment reference",
+    detail: `The attested payment carries reference ${shortHex(stringAt(args, 0))}, and this request's is ${shortHex(
+      stringAt(args, 1),
+    )}.`,
+  }),
+  SourceMismatch: (args) => ({
+    title: "Paid from a different account",
+    rule: "ExecutionVerifier — source address",
+    detail: `The attested payment left ${shortHex(stringAt(args, 0))}, which is not this treasury's XRPL account.`,
+  }),
+  DestinationMismatch: (args) => ({
+    title: "Paid to a different account",
+    rule: "ExecutionVerifier — destination address",
+    detail: `The attested payment arrived at ${shortHex(stringAt(args, 0))}, which is not the destination this request authorised.`,
+  }),
+  SpentAmountMismatch: (args) => ({
+    title: "A different amount moved",
+    rule: "ExecutionVerifier — spent amount",
+    detail: `The attested payment spent ${args[0]} drops; this request authorised ${args[1]} including its fee.`,
+  }),
+  PaymentDidNotSucceed: (args) => ({
+    title: "The payment failed on the ledger",
+    rule: "ExecutionVerifier — payment status",
+    detail: `XRPL recorded status ${bigintAt(args, 0)}, not success. The request is failed, its window spend released, and its sequence advanced — the sequence was consumed even though nothing was delivered.`,
+  }),
+  PaymentSucceeded: () => ({
+    title: "That payment succeeded",
+    rule: "ExecutionVerifier — payment status",
+    detail: "This entry point records a failure, and the proof shows a successful payment. Use confirmSettlement.",
+  }),
+  SourceConstrained: () => ({
+    title: "The non-existence proof was constrained to a source",
+    rule: "ExecutionVerifier — non-existence proof shape",
+    detail:
+      "A source-constrained search proves less than it appears to: it shows no payment from that account, not that this payment never happened.",
+  }),
+  SearchStartsTooLate: (args) => ({
+    title: "The proof does not cover the whole window",
+    rule: "ExecutionVerifier — search range",
+    detail: `The search began at ledger ${bigintAt(args, 0)}, after the payment could first have appeared at ${bigintAt(
+      args,
+      1,
+    )}. A gap at the start could hide a payment that already landed.`,
+  }),
+  SearchEndsTooEarly: (args) => ({
+    title: "The proof stops before the payment expires",
+    rule: "ExecutionVerifier — search range",
+    detail: `The search ended at ledger ${bigintAt(args, 0)}, before the payment's last valid ledger ${bigintAt(
+      args,
+      1,
+    )}. The payment could still be included after that point.`,
+  }),
+  SearchAmountTooHigh: (args) => ({
+    title: "The proof searched for a larger payment",
+    rule: "ExecutionVerifier — search amount",
+    detail: `The search looked for at least ${bigintAt(args, 0)} drops, more than this payment's ${bigintAt(
+      args,
+      1,
+    )}. Not finding a bigger payment says nothing about this one.`,
   }),
 
   // --- XrplAddress -------------------------------------------------------
