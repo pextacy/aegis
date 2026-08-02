@@ -20,14 +20,18 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 | 0 | Unblock the critical path | — | `[~]` one blocker: faucet |
 | 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
 | 2 | XRPL serialiser and signer in Go | — | `[x]` verified against a real XRPL blob |
-| 3 | TEE extension | 0, 1, 2 | `[~]` full cycle proven on a local chain; Coston2 run needs the faucet |
-| 4 | Settlement and proof | 3 | `[~]` code complete, 33 settlement tests and 87 submitter tests; live XRPL run needs the faucet |
+| 3 | TEE extension | 0, 1, 2 | `[~]` full cycle proven on a local chain **and settled on XRPL Testnet**; Coston2 relay needs the faucet |
+| 4 | Settlement and proof | 3 | `[~]` 33 settlement tests, 87 submitter tests, **a real validated XRPL payment**; the FDC proof leg needs the faucet |
 | 5 | Interface and hardening | 4 | `[~]` dashboard complete, 32 tests; video and rehearsal need the faucet |
 | 6 | Multisig and PMW migration | 5 | post-program |
 
 Phases 0, 1 and 2 have no dependency on each other. The original plan expected P0-1 (indexer credentials) to set the schedule; running our own indexer removed that, so the only thing outstanding in phase 0 is funding the deployer from a captcha-gated faucet.
 
-**Every remaining task in the project reduces to that one blocker.** `./scripts/check.sh` passes in full — contracts, extension, container conformance, submitter, dashboard and every hygiene rule — on a clean checkout with no chain, tunnel or credentials. Nothing else is code-incomplete. What is left is P0-2 and the four items downstream of it (P0-7's on-chain leg, P3-15 on Coston2, P4's live settlement, P5-11 and P5-12), all of which need C2FLR at `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from `https://faucet.flare.network/coston2`. The captcha is the reason this cannot be automated, and it is the only reason.
+The XRPL half no longer waits on it. `./scripts/xrpl-settlement.sh` funds an enclave-born address from the XRPL Testnet faucet — which is an HTTP endpoint, not a captcha — reads the account's real sequence and ledger height, runs the full policy cycle against them, and submits the signed blob to the network. Transaction `E82AA92E…71D059` validated in ledger 19574777, `tesSUCCESS`, 1,000,000 drops delivered. What still needs C2FLR is Flare's side: the instruction relay and the FDC proof.
+
+That run is also what found the sequence bug recorded below, which no unit test could have caught, because the wrong assumption was shared by the contract and every test that exercised it.
+
+**Every remaining Coston2 task reduces to that one blocker.** `./scripts/check.sh` passes in full — contracts, extension, container conformance, submitter, dashboard and every hygiene rule — on a clean checkout with no chain, tunnel or credentials. Nothing else is code-incomplete. What is left is P0-2 and the four items downstream of it (P0-7's on-chain leg, P3-15 on Coston2, P4's live settlement, P5-11 and P5-12), all of which need C2FLR at `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from `https://faucet.flare.network/coston2`. The captcha is the reason this cannot be automated, and it is the only reason.
 
 ---
 
@@ -261,6 +265,12 @@ Still outstanding, because it needs a funded deployer on Coston2 (P0-2):
 An XRPL transaction consumes its sequence only by being *included in a ledger*. One that expired past `LastLedgerSequence` without ever being included consumed nothing, and the account still expects that number. Advancing there is what wedges the treasury: every later payment would carry a sequence the account will never reach. Leaving `nextSequence` alone is what keeps it usable — the next dispatch simply reuses it, and the expired transaction can never be replayed because it is past its own expiry ledger.
 
 The case the original wording was reaching for is real, though, and it is not this one. A `tec`-coded transaction *is* in a ledger — fee burned, sequence consumed, nothing delivered — and a non-existence attestation will happily prove it absent, because that attestation only counts *successful* payments. Proving that through `confirmNonExecution` is exactly the permanent wedge the plan warned about. So it gets its own path, P4-6b, driven by a `Payment` proof with a non-zero `status`, which is positive evidence that a ledger consumed the sequence. The submitter always takes the `Payment` path when the transaction exists at all, and the non-existence path only when nothing was included.
+
+**A second correction, and this one came from the network rather than from reasoning.** Both the plan and the contract assumed a treasury's XRPL account starts at sequence 1. It does not. Since the DeletableAccounts amendment a newly funded account takes the *ledger index it was created in* as its first sequence — 19,574,774 for the account this was found with. `createTreasury` hardcoded 1, which meant every treasury would sign its first payment against a sequence XRPL passed millions of ledgers ago.
+
+The failure is unrecoverable, which is what makes it worth its own paragraph. A `tefPAST_SEQ` transaction never reaches a ledger, and every path that advances the sequence needs one that did — settlement needs a settled payment, `confirmFailedExecution` needs a `Payment` proof, and `confirmNonExecution` deliberately does not advance. So the first payment fails and nothing can ever move past it.
+
+The fix is `TreasuryRegistry.setInitialSequence`, and it has to be a separate step rather than a better default: at KEYGEN the account has no sequence because it does not exist, since XRPL creates it on first funding. The order is generate, bind, fund, record. `nextSequence` zero now means "not yet known" and both `propose` and `dispatch` refuse while it holds — `propose` too, so a request that can never be signed does not collect approvals first. The value stays correctable until XRPL consumes one, because otherwise a mistyped sequence would wedge the treasury exactly as the original bug did.
 
 `firstLedgerSequence` (P4-10) is the other thing the plan did not anticipate. A non-existence proof is only as strong as the range it searched, and the range is chosen by whoever requests the attestation. Without a lower bound recorded at dispatch, a one-ledger proof would satisfy the deadline check while saying nothing about the ledgers where the payment actually landed — releasing a window spend for money that had already moved.
 

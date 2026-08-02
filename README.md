@@ -152,10 +152,11 @@ npm start
 4. **Create a treasury** — from the home page, under a policy you administer.
 5. **Generate its XRPL key** — on the treasury page. The key is born inside the enclave and never imported. The registry derives the AccountID from the returned public key using the SHA-256 and RIPEMD-160 precompiles, and refuses the binding if the reported address does not match.
 6. **Fund the XRPL account** — https://xrpl.org/xrp-testnet-faucet.html, or any testnet account. Until it holds the base reserve the ledger does not consider it to exist, and the dashboard says so.
-7. **Propose a payment** — every rule is evaluated live as you type, and the whole call is simulated before the button becomes usable.
-8. **Approve it from a second account** — the approval screen shows the destination, the tag, the amount in drops *and* XRP *and* USD, the resolved tier, approvals collected and required, the unlock time and the policy digest. An approver who cannot see those is approving a description rather than a fact.
-9. **Dispatch it** — after the timelock. The current XRPL ledger and fee are read live; the contract re-runs the entire policy check against the price and the window as they are at that moment.
-10. **Watch it settle** — the submitter puts the blob on XRPL and brings back an FDC proof. `ExecutionVerifier` checks the source, the destination, the spent amount and the payment reference before anything moves to `Settled`.
+7. **Record the starting sequence** — on the treasury page, once the account is funded. An XRPL account does not start at sequence 1; it starts at the ledger index it was created in, which is why this cannot be a default and cannot be done before funding. The dashboard reads the live value off the ledger and asks you to confirm it. Payments are refused until it is recorded, and the panel says so rather than letting you build a request that could never be signed.
+8. **Propose a payment** — every rule is evaluated live as you type, and the whole call is simulated before the button becomes usable.
+9. **Approve it from a second account** — the approval screen shows the destination, the tag, the amount in drops *and* XRP *and* USD, the resolved tier, approvals collected and required, the unlock time and the policy digest. An approver who cannot see those is approving a description rather than a fact.
+10. **Dispatch it** — after the timelock. The current XRPL ledger and fee are read live; the contract re-runs the entire policy check against the price and the window as they are at that moment.
+11. **Watch it settle** — the submitter puts the blob on XRPL and brings back an FDC proof. `ExecutionVerifier` checks the source, the destination, the spent amount and the payment reference before anything moves to `Settled`.
 
 Everything on those screens is read from Flare and XRPL directly. There is no Aegis backend, which is what makes the audit log reproducible by anyone with an RPC endpoint.
 
@@ -196,6 +197,19 @@ docs/               PRD.md, DOCS.md, PLAN.md, phases.md
 ## Commands
 
 ```bash
+# Everything, under one exit code. No chain, tunnel, credentials or faucet.
+./scripts/check.sh
+./scripts/check.sh --strict     # what CI runs: a skipped section is a failure
+
+# The policy cycle against a local chain and the real enclave, no faucet
+./scripts/local-integration.sh
+
+# The same, but settled for real on XRPL Testnet. Needs no funded Coston2
+# wallet — the XRPL faucet is an HTTP endpoint — and is the only thing that
+# proves the signature is one the network accepts rather than one that merely
+# looks well formed.
+./scripts/xrpl-settlement.sh
+
 # Contracts
 forge build && forge test -vvv && forge fmt
 
