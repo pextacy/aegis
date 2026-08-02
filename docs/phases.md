@@ -17,15 +17,21 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 
 | Phase | Title | Depends on | State |
 |---|---|---|---|
-| 0 | Unblock the critical path | — | `[~]` one blocker: faucet |
-| 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
-| 2 | XRPL serialiser and signer in Go | — | `[x]` verified against a real XRPL blob |
-| 3 | TEE extension | 0, 1, 2 | `[~]` full cycle proven on a local chain **and settled on XRPL Testnet**; Coston2 relay needs the faucet |
-| 4 | Settlement and proof | 3 | `[~]` 33 settlement tests, 87 submitter tests, **a real validated XRPL payment**; the FDC proof leg needs the faucet |
-| 5 | Interface and hardening | 4 | `[~]` dashboard complete, 32 tests; video and rehearsal need the faucet |
+| 0 | Unblock the critical path | — | `[~]` one blocker, unchanged since day one: C2FLR from a reCAPTCHA-gated faucet |
+| 1 | Policy layer in Solidity | — | `[x]` 176 contract tests |
+| 2 | XRPL serialiser and signer in Go | — | `[x]` reference vectors, then **two real validated XRPL Testnet payments** |
+| 3 | TEE extension | 0, 1, 2 | `[~]` full cycle on a local chain with the real enclave, settled on XRPL; the FCC interfaces verified against the real `FlareTeeManager`, incl. a machine registered on a fork |
+| 4 | Settlement and proof | 3 | `[~]` every stage run against live Flare — real `prepareRequest`, real DA layer, **a real finalised attestation verified by the real `FdcVerification` with nothing substituted** |
+| 5 | Interface and hardening | 4 | `[~]` dashboard complete, 32 tests, `npm audit` clean; video and rehearsal need the faucet |
 | 6 | Multisig and PMW migration | 5 | post-program |
 
+**What "needs the faucet" now means, precisely.** Every Aegis code path has been executed against live Flare and XRPL infrastructure — the deploy script against real system contracts, the FTSO reads and the staleness refusal against the real feed, the FCC registry and machine registration against the real manager, the whole FDC client against the real verifier and DA layer, the proof verification against a genuinely finalised attestation, and the XRPL signer against a ledger that validated two of its payments. What has *not* happened is paying gas on Coston2 proper: deploying these contracts there and driving one propose → dispatch → settle with real transactions. That is the faucet click and nothing else. Fork tests deliberately cannot stand in for it, because a fork's funded account is not a funded account.
+
+One further item is not ours: `toProduction`, which makes a registered TEE machine selectable, is in the vendored scaffold's tooling and is called by no Aegis contract.
+
 Phases 0, 1 and 2 have no dependency on each other. The original plan expected P0-1 (indexer credentials) to set the schedule; running our own indexer removed that, so the only thing outstanding in phase 0 is funding the deployer from a captcha-gated faucet.
+
+Two of the three things this tracker once listed as external blockers turned out not to be. The indexer credentials were replaced by running our own; the FDC verifier key is published for testnet. Both were assumptions worth testing rather than planning around, and the same instinct is what found the sequence bug below. The faucet is the one that is real: `faucet.flare.network/coston2` serves a Google reCAPTCHA and there is no API behind it, so it needs a person.
 
 **The Flare half no longer waits on the faucet either.** `./scripts/coston2-fork-check.sh` forks Coston2 with anvil and funds a deployer on the fork, which puts the production deploy script in front of the real system contracts rather than the doubles that had been standing in for them. It proves four things that had never been checked against anything real: `script/DeployAegis.s.sol` deploys and wires against the live `FtsoV2`, `FlareTeeManager` and `FdcVerification`; the *derived* XRP/USD feed id resolves on the real `FtsoV2` (it is built rather than pasted, and a wrong one reverts); the drops → USD conversion agrees with the real value and the real decimals; and the staleness check refuses with `StalePrice` once that real feed is aged past `MAX_PRICE_AGE`. That last one is the fail-closed path, tested by warping the fork rather than by writing a timestamp into a stub.
 
