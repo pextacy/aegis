@@ -19,6 +19,12 @@ out/
 cache/
 .DS_Store
 
+# Foundry broadcast records. A run against a real chain is a deployment audit
+# trail and stays; anvil (31337) runs are transient output from
+# scripts/local-integration.sh, rewritten on every invocation.
+broadcast/*/31337/
+broadcast/**/dry-run/
+
 # go.work is generated on demand by start-services.sh for USE_LOCAL_SIBLINGS=1
 # (points host builds at sibling tee-node / tee-proxy). Never committed.
 go.work
@@ -44,8 +50,15 @@ tools/pkg/contracts/*/*.bin
 # Language implementation build artifacts.
 # package-lock.json is deliberately NOT ignored — it is the reproducibility
 # anchor for `npm ci` in typescript/Dockerfile.
+#
+# node_modules is ignored everywhere rather than per directory: a new Node
+# package in this repository should not be one `git add` away from committing a
+# hundred thousand dependency files, which is exactly what happened to web/.
+node_modules/
 typescript/node_modules/
 typescript/dist/
+submitter/node_modules/
+submitter/dist/
 python/__pycache__/
 python/**/__pycache__/
 python/.venv/

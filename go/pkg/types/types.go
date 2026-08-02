@@ -19,15 +19,15 @@ import (
 // PaymentController._policyDigest and the decoder registration in the same
 // commit, or every payment fails with "policy digest mismatch".
 type SignRequest struct {
-	RequestId            *big.Int    `json:"requestId"`
-	TreasuryId           *big.Int    `json:"treasuryId"`
-	DestinationAccountId [32]byte    `json:"destinationAccountId"`
-	DestinationTag       uint32      `json:"destinationTag"`
-	AmountDrops          uint64      `json:"amountDrops"`
-	Sequence             uint32      `json:"sequence"`
-	LastLedgerSequence   uint32      `json:"lastLedgerSequence"`
-	FeeDrops             uint64      `json:"feeDrops"`
-	PolicyDigest         [32]byte    `json:"policyDigest"`
+	RequestId            *big.Int `json:"requestId"`
+	TreasuryId           *big.Int `json:"treasuryId"`
+	DestinationAccountId [32]byte `json:"destinationAccountId"`
+	DestinationTag       uint32   `json:"destinationTag"`
+	AmountDrops          uint64   `json:"amountDrops"`
+	Sequence             uint32   `json:"sequence"`
+	LastLedgerSequence   uint32   `json:"lastLedgerSequence"`
+	FeeDrops             uint64   `json:"feeDrops"`
+	PolicyDigest         [32]byte `json:"policyDigest"`
 }
 
 // SignResponse is the ABI-encoded result of a successful SIGNTX.

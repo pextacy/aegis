@@ -1,0 +1,11 @@
+# Dependencies and build output.
+node_modules/
+.next/
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# The generated dashboard configuration. .env.example is the committed template;
+# .env.local carries one operator's deployment addresses and never belongs in
+# git — the root .gitignore already covers .env*, this repeats it where it is
+# easy to see.
+.env.local
