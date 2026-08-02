@@ -51,14 +51,31 @@ else
     fi
 fi
 
-# --- P0-6: indexer credentials ---
+# --- P0-6: a C-chain indexer the proxy can read ---
+# ext-proxy panics without one. Either our own local indexer is running, or the
+# config points at Flare's shared one with issued credentials.
 TOML="$PROJECT_DIR/config/proxy/extension_proxy.coston2.docker.toml"
 if [[ ! -f "$TOML" ]]; then
     blocked "P0-6  $TOML missing — copy it from the .example"
 elif grep -q "issued-by-flare-support\|<indexer-db" "$TOML"; then
     blocked "P0-6  indexer credentials not filled in $(basename "$TOML")"
+elif grep -q 'host = "indexer-db"' "$TOML"; then
+    DB_CID=$(docker compose -f "$PROJECT_DIR/docker-compose.indexer.yaml" ps -q indexer-db 2>/dev/null)
+    if [[ -z "$DB_CID" ]]; then
+        blocked "P0-6  local indexer not running — ./scripts/indexer.sh up"
+    else
+        BEHIND=$(docker exec "$DB_CID" mysql -uroot -proot flare_ftso_indexer -N -e \
+            "SELECT (SELECT \`index\` FROM states WHERE name='last_chain_block') - (SELECT \`index\` FROM states WHERE name='last_database_block');" 2>/dev/null)
+        if [[ -z "$BEHIND" ]]; then
+            blocked "P0-6  local indexer database not answering — ./scripts/indexer.sh logs"
+        elif (( BEHIND > 60 )); then
+            blocked "P0-6  local indexer is $BEHIND blocks behind — still catching up"
+        else
+            ok "P0-6  local indexer in sync ($BEHIND blocks behind head)"
+        fi
+    fi
 else
-    ok "P0-6  indexer credentials present"
+    ok "P0-6  configured against an external indexer"
 fi
 
 # --- P0-4: tunnel ---

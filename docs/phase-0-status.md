@@ -8,14 +8,17 @@ Last updated: 2026-08-02
 
 ## What is blocking
 
-Two things. Both were checked rather than assumed, and neither has a workaround that does not involve a human.
+One thing.
 
 | # | Blocker | Who | Effort |
 |---|---|---|---|
-| 1 | Coston2 indexer database credentials | Flare technical support | request now, unknown turnaround |
-| 2 | Fund `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from the faucet | you | one minute |
+| 1 | Fund `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from the faucet | you | one minute |
 
-Blocker 1 has unknown latency and gates the whole project — send that request first. Phases 1 and 2 are fully independent of it and can start immediately.
+**The indexer credentials are no longer needed.** `tee-proxy` requires a C-chain indexer database, and Flare issues credentials for a shared one on request — unknown turnaround, gating everything. `flare-system-c-chain-indexer` is open source and writes exactly the schema `go-flare-common/pkg/database` reads, so `./scripts/indexer.sh up` now runs our own against the public Coston2 RPC. The proxy starts against it and reports `Database in sync`. Request the shared credentials anyway if you want them, but nothing waits on them.
+
+**The tunnel is no longer a blocker either.** `./scripts/tunnel.sh` brings up a cloudflared tunnel with no account and writes `EXT_PROXY_URL` itself.
+
+Run `./scripts/phase0-check.sh` for live state.
 
 **The tunnel is no longer a blocker.** It was, when the plan assumed ngrok. cloudflared reaches the same result with no account, so `./scripts/tunnel.sh` now brings up a public HTTPS tunnel to port 6674 and writes the URL into `.env.coston2` and `.env` itself. The cost is that a quick tunnel gets a new URL on every restart, which means re-running `post-build.sh` to re-register the machine under it. Reserving an ngrok domain removes that annoyance and `./scripts/tunnel.sh --ngrok <domain>` uses it — worth doing eventually, not worth blocking on.
 

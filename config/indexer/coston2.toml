@@ -1,0 +1,43 @@
+# C-chain indexer for Coston2, feeding the local database that ext-proxy reads.
+#
+# FSP mode indexes only what the Flare Systems Protocol needs — signing
+# policies, voter registrations, reward offers — and resolves every contract by
+# name through the on-chain ContractRegistry, so no addresses are hardcoded.
+# With history_epochs = 0 it indexes roughly the last fifteen minutes of blocks
+# and backfills FSP metadata two reward epochs back, which is what the proxy
+# needs and takes a couple of minutes rather than days.
+
+[indexer]
+mode = "fsp"
+history_epochs = 0
+rpc_concurrency = 8
+batch_size = 100
+# The public Coston2 RPC caps eth_getLogs at 30 blocks. Setting this higher
+# fails every log request with "requested too many blocks ... maximum is 30".
+# Raise it only against a dedicated node.
+log_range = 30
+new_block_check_millis = 1000
+confirmations = 1
+no_new_blocks_delay_warning = 120
+
+[logger]
+level = "INFO"
+console = true
+
+[chain]
+node_url = "https://coston2-api.flare.network/ext/C/rpc"
+chain_type = 1
+
+[db]
+host = "indexer-db"
+port = 3306
+database = "flare_ftso_indexer"
+username = "root"
+password = "root"
+log_queries = false
+drop_table_at_start = false
+
+[timeout]
+backoff_max_elapsed_time_seconds = 120
+# Must cover a full log_range request against a throttled public endpoint.
+rpc_timeout_millis = 20000

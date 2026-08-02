@@ -1,0 +1,41 @@
+# Local C-chain indexer, so ext-proxy has a database without waiting on
+# Flare-issued credentials for the shared one.
+#
+# Usage: ./scripts/indexer.sh up
+#
+# Joins the same network as the rest of the stack, so the proxy can reach the
+# database by service name. Port 3307 is published for inspection from the host;
+# nothing depends on it being reachable from outside.
+services:
+  indexer-db:
+    image: mysql:8.4
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=flare_ftso_indexer
+    ports:
+      - "${INDEXER_DB_BIND:-127.0.0.1:3307}:3306"
+    tmpfs:
+      # The indexer holds ~15 minutes of blocks and refills on its own, so
+      # persistence would buy nothing and a stale volume causes confusion.
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  indexer:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    volumes:
+      - ./config/indexer/coston2.toml:/app/config/config.toml:ro
+    depends_on:
+      indexer-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-extension-scaffold-coston2}
+    external: false
