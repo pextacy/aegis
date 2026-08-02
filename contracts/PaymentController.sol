@@ -344,7 +344,7 @@ contract PaymentController {
                 feeDrops: feeDrops,
                 policyDigest: digest
             }),
-            new address[](0),
+            POLICY_ENGINE.guardiansOf(t.policyId),
             tier.requiredApprovals
         );
     }

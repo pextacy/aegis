@@ -53,6 +53,12 @@ contract PolicyEngine {
     mapping(uint256 policyId => mapping(address account => uint8 roleMask)) private _roles;
     mapping(uint256 policyId => mapping(bytes32 accountId => mapping(uint32 tag => bool))) private _allowlist;
 
+    // Guardians are the one role that has to be enumerable: AegisInstructionSender
+    // passes them to FCC as cosigners, which is a second authorisation gate on
+    // top of Aegis' own accounting. A bitmask alone cannot be listed.
+    mapping(uint256 policyId => address[]) private _guardians;
+    mapping(uint256 policyId => mapping(address account => uint256 oneBasedIndex)) private _guardianIndex;
+
     /// @notice Emitted once per policy, at creation.
     event PolicyCreated(uint256 indexed policyId, address indexed creator, uint256 tierCount);
     /// @notice Emitted when a role mask is written.
@@ -130,7 +136,22 @@ contract PolicyEngine {
         _requirePolicyAdmin(policyId);
         if (account == address(0)) revert ZeroAddress();
         _roles[policyId][account] = roleMask;
+        _syncGuardian(policyId, account, roleMask & ROLE_GUARDIAN != 0);
         emit RolesSet(policyId, account, roleMask);
+    }
+
+    /// @notice The guardians of a policy, in no particular order.
+    /// @param policyId The policy.
+    /// @return The guardian addresses.
+    function guardiansOf(uint256 policyId) external view returns (address[] memory) {
+        return _guardians[policyId];
+    }
+
+    /// @notice How many guardians a policy has.
+    /// @param policyId The policy.
+    /// @return The count.
+    function guardianCount(uint256 policyId) external view returns (uint256) {
+        return _guardians[policyId].length;
     }
 
     /// @notice Allows or disallows a destination for a policy.
@@ -227,6 +248,28 @@ contract PolicyEngine {
         if (!_policies[policyId].allowlistEnforced) return true;
         if (_allowlist[policyId][accountId][0]) return true;
         return _allowlist[policyId][accountId][tag];
+    }
+
+    /// @dev Keeps the enumerable guardian list in step with the role bitmask.
+    /// Removal swaps in the last entry rather than shifting, so the cost does
+    /// not grow with the position of the guardian being removed.
+    function _syncGuardian(uint256 policyId, address account, bool isGuardian) private {
+        uint256 idx = _guardianIndex[policyId][account];
+
+        if (isGuardian) {
+            if (idx != 0) return;
+            _guardians[policyId].push(account);
+            _guardianIndex[policyId][account] = _guardians[policyId].length;
+            return;
+        }
+
+        if (idx == 0) return;
+        address[] storage list = _guardians[policyId];
+        address last = list[list.length - 1];
+        list[idx - 1] = last;
+        _guardianIndex[policyId][last] = idx;
+        list.pop();
+        _guardianIndex[policyId][account] = 0;
     }
 
     function _requireExists(uint256 policyId) private view {
