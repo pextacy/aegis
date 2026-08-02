@@ -48,6 +48,11 @@ abstract contract AegisFixture is Test {
     bytes internal constant PUBKEY = hex"0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020";
     string internal constant CLASSIC = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh";
 
+    /// @dev A plausible XRPL Testnet ledger height. Accounts created since the
+    /// DeletableAccounts amendment start at the ledger index they were funded
+    /// in, so a treasury's first sequence is a number like this one — never 1.
+    uint32 internal constant START_SEQUENCE = 19_574_503;
+
     function setUp() public virtual {
         vm.warp(1_700_000_000);
 
@@ -85,6 +90,12 @@ abstract contract AegisFixture is Test {
         vm.stopPrank();
 
         registry.bindXrplAccount(treasuryId, PUBKEY, CLASSIC);
+
+        // A real XRPL account starts at the ledger index it was funded in, not
+        // at 1, so the fixture uses a realistic height rather than a small
+        // number that would let an off-by-one in the sequence path hide.
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE);
     }
 
     /// @dev The address wired as execution verifier. Tests of the state machine

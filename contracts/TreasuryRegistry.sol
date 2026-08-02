@@ -20,6 +20,9 @@ contract TreasuryRegistry {
     }
 
     /// @notice A treasury and its XRPL account.
+    /// @dev `nextSequence` is zero until the account's real starting sequence is
+    /// recorded — see `setInitialSequence`. Zero means "not yet known", not
+    /// "sequence zero", and every path that would spend refuses while it holds.
     struct Treasury {
         uint256 id;
         bytes32 xrplAccountId; // 20-byte AccountID, left-aligned
@@ -27,6 +30,7 @@ contract TreasuryRegistry {
         uint256 policyId;
         bool frozen;
         uint32 nextSequence;
+        bool sequenceConfirmed; // true once XRPL has consumed a sequence for this treasury
     }
 
     /// @notice A pending governed change to a treasury.
@@ -78,6 +82,9 @@ contract TreasuryRegistry {
     event AmendmentExecuted(uint256 indexed amendmentId);
     /// @notice Emitted when a treasury's XRPL sequence advances.
     event SequenceAdvanced(uint256 indexed treasuryId, uint32 nextSequence);
+
+    /// @notice Emitted when a treasury's starting XRPL sequence is recorded.
+    event InitialSequenceSet(uint256 indexed treasuryId, uint32 sequence, address indexed setBy);
     /// @notice Emitted when a collaborating contract address is wired.
     event ContractWired(bytes32 indexed what, address indexed addr);
 
@@ -103,6 +110,15 @@ contract TreasuryRegistry {
     error TimelockNotElapsed(uint64 eligibleAt, uint64 nowTime);
     error InsufficientApprovals(uint8 have, uint8 need);
     error SequenceMustAdvance(uint32 current, uint32 supplied);
+
+    /// @notice The starting sequence cannot be recorded before the account exists.
+    error AccountNotBound(uint256 treasuryId);
+
+    /// @notice The starting sequence is fixed once XRPL has consumed one.
+    error SequenceAlreadyConfirmed(uint256 treasuryId);
+
+    /// @notice Zero is the "not yet known" marker, so it is not a settable value.
+    error InitialSequenceRequired();
 
     /// @param policyEngine The policy engine to read rules and roles from.
     constructor(PolicyEngine policyEngine) {
@@ -144,7 +160,8 @@ contract TreasuryRegistry {
         Treasury storage t = _treasuries[treasuryId];
         t.id = treasuryId;
         t.policyId = policyId;
-        t.nextSequence = 1;
+        // nextSequence stays zero. The XRPL account does not exist yet, and an
+        // account that does not exist has no sequence to guess at.
 
         emit TreasuryCreated(treasuryId, policyId, msg.sender);
     }
@@ -281,7 +298,48 @@ contract TreasuryRegistry {
         Treasury storage t = _requireTreasury(treasuryId);
         if (confirmedSequence < t.nextSequence) revert SequenceMustAdvance(t.nextSequence, confirmedSequence);
         t.nextSequence = confirmedSequence + 1;
+        // XRPL has now consumed a sequence for this account, so the starting
+        // point is settled as a matter of record and stops being editable.
+        t.sequenceConfirmed = true;
         emit SequenceAdvanced(treasuryId, t.nextSequence);
+    }
+
+    /// @notice Records the XRPL account's real starting sequence.
+    /// @dev This exists because an XRPL account created today does not start at
+    /// sequence 1. Since the DeletableAccounts amendment, a newly funded
+    /// AccountRoot takes the *ledger index at which it was created* as its first
+    /// sequence — a number in the tens of millions. A treasury that assumed 1
+    /// would sign a transaction XRPL rejects with `tefPAST_SEQ`, and because a
+    /// rejected transaction never reaches a ledger there is no proof that could
+    /// advance it: `confirmSettlement` needs a settled payment, and
+    /// `confirmFailedExecution` needs a `Payment` proof that only exists for a
+    /// transaction a ledger actually included. The treasury would be wedged on
+    /// its first payment, permanently.
+    ///
+    /// It cannot be folded into `bindXrplAccount` either. At KEYGEN the account
+    /// has no sequence because it does not exist — XRPL creates it when it is
+    /// first funded. So the order is: generate, bind, fund, then record what
+    /// funding produced.
+    ///
+    /// A wrong value here cannot authorise anything. Destination, tag and amount
+    /// are policy-checked and digest-bound regardless, and XRPL enforces the
+    /// sequence itself: too low is rejected, too high never leaves the queue.
+    /// The only cost is a payment that does not land, which is why the value
+    /// stays correctable until XRPL confirms one.
+    /// @param treasuryId The treasury.
+    /// @param sequence The account's current sequence, read from `account_info`.
+    function setInitialSequence(uint256 treasuryId, uint32 sequence) external {
+        Treasury storage t = _requireTreasury(treasuryId);
+        if (!POLICY_ENGINE.hasRole(t.policyId, msg.sender, POLICY_ENGINE.ROLE_POLICY_ADMIN())) {
+            revert NotPolicyAdmin(t.policyId, msg.sender);
+        }
+        if (t.frozen) revert TreasuryFrozenError(treasuryId);
+        if (t.xrplAccountId == bytes32(0)) revert AccountNotBound(treasuryId);
+        if (t.sequenceConfirmed) revert SequenceAlreadyConfirmed(treasuryId);
+        if (sequence == 0) revert InitialSequenceRequired();
+
+        t.nextSequence = sequence;
+        emit InitialSequenceSet(treasuryId, sequence, msg.sender);
     }
 
     /// @notice Reads a treasury.

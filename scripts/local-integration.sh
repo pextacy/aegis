@@ -183,9 +183,19 @@ INSTRUCTION_ID="$(cast keccak "$(cast abi-encode 'f(uint256,bytes32)' 1 "$(b32 K
 send "$SENDER" "submitKeygenResult(bytes32,bytes,string)" "$INSTRUCTION_ID" "$PUBKEY" "$CLASSIC" >/dev/null \
     || die "submitKeygenResult failed"
 
-BOUND="$(call "$REGISTRY" "getTreasury(uint256)((uint256,bytes32,string,uint256,bool,uint32))" 1)"
+BOUND="$(call "$REGISTRY" "getTreasury(uint256)((uint256,bytes32,string,uint256,bool,uint32,bool))" 1)"
 grep -q "$CLASSIC" <<<"$BOUND" || die "the treasury does not carry the enclave's address"
 log "bound on-chain: $CLASSIC"
+
+# A treasury refuses to pay until it knows the sequence its XRPL account starts
+# at, because an account created since the DeletableAccounts amendment starts at
+# the ledger index it was funded in, not at 1. No account is funded on this
+# local run, so a plausible height stands in — scripts/xrpl-settlement.sh is the
+# one that reads the real number off the ledger.
+START_SEQUENCE=19574503
+send "$REGISTRY" "setInitialSequence(uint256,uint32)" 1 "$START_SEQUENCE" >/dev/null \
+    || die "setInitialSequence failed"
+log "starting sequence $START_SEQUENCE recorded"
 
 # --- 5. A payment, end to end ----------------------------------------------
 

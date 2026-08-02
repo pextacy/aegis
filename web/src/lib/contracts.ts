@@ -39,7 +39,10 @@ export type Treasury = {
   xrplAddress: string;
   policyId: bigint;
   frozen: boolean;
+  /** Zero means the XRPL account's starting sequence has not been recorded yet. */
   nextSequence: number;
+  /** True once XRPL has consumed a sequence, after which the start is fixed. */
+  sequenceConfirmed: boolean;
 };
 
 export type PaymentRequest = {

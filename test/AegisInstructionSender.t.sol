@@ -77,6 +77,11 @@ contract AegisInstructionSenderTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev A plausible XRPL ledger height. Accounts created since the
+    /// DeletableAccounts amendment start at the ledger index they were funded
+    /// in, so a treasury's first sequence is a number like this, never 1.
+    uint32 internal constant START_SEQUENCE = 19_574_503;
+
     // --- the three-way constant alignment ---------------------------------
 
     /// @dev The Go side asserts the same four strings. If one side drifts, one
@@ -336,6 +341,15 @@ contract AegisInstructionSenderTest is Test {
     }
 
     function _proposeApproveDispatch() private returns (uint256 requestId) {
+        // A payment needs a bound account and a recorded starting sequence. Set
+        // up here rather than in setUp, so the keygen and binding tests can
+        // still observe a treasury that has neither.
+        if (registry.getTreasury(treasuryId).xrplAccountId == bytes32(0)) _bindAccount();
+        if (registry.nextSequenceOf(treasuryId) == 0) {
+            vm.prank(admin);
+            registry.setInitialSequence(treasuryId, START_SEQUENCE);
+        }
+
         vm.prank(proposer);
         requestId = controller.propose(treasuryId, DEST, 0, 1_000_000);
         vm.prank(approverA);

@@ -220,6 +220,25 @@ const EXPLANATIONS: Record<string, Explainer> = {
     rule: "TreasuryRegistry — sequence tracking",
     detail: `The treasury already expects sequence ${bigintAt(args, 0)}; the proof carries ${bigintAt(args, 1)}.`,
   }),
+  AccountNotBound: (args) => ({
+    title: "No XRPL account yet",
+    rule: "TreasuryRegistry — starting sequence",
+    detail:
+      `Treasury ${bigintAt(args, 0)} has no XRPL account bound, so it has no starting sequence to record. ` +
+      `Generate the key in the TEE and bind it first.`,
+  }),
+  SequenceAlreadyConfirmed: (args) => ({
+    title: "Starting sequence is already settled",
+    rule: "TreasuryRegistry — starting sequence",
+    detail:
+      `XRPL has already consumed a sequence for treasury ${bigintAt(args, 0)}, so its starting point is a matter ` +
+      `of record and can no longer be edited.`,
+  }),
+  InitialSequenceRequired: () => ({
+    title: "Starting sequence cannot be zero",
+    rule: "TreasuryRegistry — starting sequence",
+    detail: `Zero is how this system marks "not yet known", so it is not a value the account can start at.`,
+  }),
 
   // --- PaymentController -------------------------------------------------
   RequestNotFound: (args) => ({
@@ -263,6 +282,14 @@ const EXPLANATIONS: Record<string, Explainer> = {
     title: "Destination is not a left-aligned AccountID",
     rule: "PaymentController — destination encoding",
     detail: `${shortHex(stringAt(args, 0))} has bytes set below the first 20, so it is not an AccountID left-aligned in a word. A right-aligned value would serialise to a different XRPL account than the one intended.`,
+  }),
+  SequenceNotInitialised: (args) => ({
+    title: "Treasury has no starting sequence yet",
+    rule: "PaymentController — starting sequence",
+    detail:
+      `Treasury ${bigintAt(args, 0)} has not recorded the XRPL sequence its account starts at. An XRPL account ` +
+      `begins at the ledger index it was funded in, not at 1, so signing before that is known produces a ` +
+      `transaction the network rejects and no proof can ever settle. Fund the account, then record its sequence.`,
   }),
   ZeroDestination: () => ({
     title: "Destination is empty",

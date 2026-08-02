@@ -138,6 +138,11 @@ contract PaymentController {
     error ZeroAmount();
     error ZeroDestination();
     error DestinationNotLeftAligned(bytes32 accountId);
+
+    /// @notice The treasury's XRPL starting sequence has not been recorded yet.
+    /// @dev Signing against a guessed sequence produces a transaction XRPL
+    /// rejects and can never prove, so this refuses instead.
+    error SequenceNotInitialised(uint256 treasuryId);
     error LastLedgerSequenceRequired();
     error FirstLedgerSequenceRequired();
     error LedgerRangeInverted(uint32 firstLedgerSequence, uint32 lastLedgerSequence);
@@ -207,6 +212,10 @@ contract PaymentController {
 
         TreasuryRegistry.Treasury memory t = TREASURY_REGISTRY.getTreasury(treasuryId);
         if (t.frozen) revert TreasuryIsFrozen(treasuryId);
+        // Refused here rather than at dispatch, for the same reason as the
+        // alignment check above: a request that can never be signed must not
+        // collect approvals first.
+        if (t.nextSequence == 0) revert SequenceNotInitialised(treasuryId);
         if (!POLICY_ENGINE.hasRole(t.policyId, msg.sender, POLICY_ENGINE.ROLE_PROPOSER())) {
             revert NotProposer(t.policyId, msg.sender);
         }
@@ -335,7 +344,12 @@ contract PaymentController {
 
         _requireWindowFits(r.treasuryId, t.policyId, amountUsd);
 
+        // Re-checked at dispatch rather than trusted from proposal, like every
+        // other rule here: the whole point of dispatch is that an hour-old
+        // answer is not automatically still true.
         uint32 sequence = t.nextSequence;
+        if (sequence == 0) revert SequenceNotInitialised(r.treasuryId);
+
         bytes32 digest = _policyDigest(
             requestId,
             r.treasuryId,

@@ -254,7 +254,23 @@ contract PaymentControllerTest is AegisFixture {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.prank(proposer);
         controller.dispatch(id, FLS, LLS, FEE);
-        assertEq(controller.getRequest(id).sequence, 1, "first payment uses sequence 1");
+        assertEq(
+            controller.getRequest(id).sequence, START_SEQUENCE, "the first payment uses the account's real sequence"
+        );
+    }
+
+    /// @dev The bug this guards: a treasury whose XRPL starting sequence has not
+    /// been recorded would otherwise sign against a guessed one, and a
+    /// transaction XRPL rejects can never be proven, so nothing could ever
+    /// advance it. Refusing at propose keeps approvals off a dead request.
+    function test_proposeRefusedBeforeTheStartingSequenceIsKnown() public {
+        vm.prank(admin);
+        uint256 fresh = registry.createTreasury(policyId);
+        registry.bindXrplAccount(fresh, PUBKEY, CLASSIC);
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.SequenceNotInitialised.selector, fresh));
+        vm.prank(proposer);
+        controller.propose(fresh, DEST, 0, dropsForUsd(100e18));
     }
 
     // --- the price moving between proposal and dispatch -------------------
@@ -500,5 +516,11 @@ contract PaymentControllerTest is AegisFixture {
         policy.setRoles(pid, approverA, policy.ROLE_APPROVER());
         tid = registry.createTreasury(pid);
         vm.stopPrank();
+
+        // Same key as the fixture's treasury: nothing here turns on which XRPL
+        // account it is, only that one is bound so a starting sequence exists.
+        registry.bindXrplAccount(tid, PUBKEY, CLASSIC);
+        vm.prank(admin);
+        registry.setInitialSequence(tid, START_SEQUENCE);
     }
 }

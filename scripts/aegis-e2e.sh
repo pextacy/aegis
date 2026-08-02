@@ -215,7 +215,7 @@ step "Binding the account on-chain"
 send "$AEGIS_SENDER" "submitKeygenResult(bytes32,bytes,string)" \
     "$INSTRUCTION_ID" "$PUBKEY" "$CLASSIC" >/dev/null || die "submitKeygenResult failed"
 
-BOUND="$(call "$TREASURY_REGISTRY" "getTreasury(uint256)((uint256,bytes32,string,uint256,bool,uint32))" "$TREASURY_ID")"
+BOUND="$(call "$TREASURY_REGISTRY" "getTreasury(uint256)((uint256,bytes32,string,uint256,bool,uint32,bool))" "$TREASURY_ID")"
 grep -q "$CLASSIC" <<<"$BOUND" || die "the treasury does not carry the address the enclave produced"
 log "bound: $CLASSIC"
 

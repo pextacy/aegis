@@ -49,8 +49,63 @@ contract TreasuryRegistryTest is AegisFixture {
         registry.createTreasury(policyId);
     }
 
-    function test_treasuryStartsAtSequenceOne() public view {
-        assertEq(registry.nextSequenceOf(treasuryId), 1);
+    /// @dev A fresh treasury has no sequence at all, and that is the point. XRPL
+    /// accounts created since the DeletableAccounts amendment start at the
+    /// ledger index they were funded in, so any number this contract invented
+    /// would be wrong; zero means "not yet known" and every spending path
+    /// refuses while it holds.
+    function test_treasuryStartsWithNoKnownSequence() public {
+        vm.prank(admin);
+        uint256 fresh = registry.createTreasury(policyId);
+        assertEq(registry.nextSequenceOf(fresh), 0);
+    }
+
+    function test_initialSequenceIsRecordedAfterFunding() public {
+        assertEq(registry.nextSequenceOf(treasuryId), START_SEQUENCE);
+    }
+
+    function test_initialSequenceNeedsABoundAccount() public {
+        vm.prank(admin);
+        uint256 fresh = registry.createTreasury(policyId);
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.AccountNotBound.selector, fresh));
+        vm.prank(admin);
+        registry.setInitialSequence(fresh, START_SEQUENCE);
+    }
+
+    function test_initialSequenceRejectsZero() public {
+        vm.expectRevert(TreasuryRegistry.InitialSequenceRequired.selector);
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, 0);
+    }
+
+    function test_initialSequenceIsPolicyAdminOnly() public {
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.NotPolicyAdmin.selector, policyId, outsider));
+        vm.prank(outsider);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE);
+    }
+
+    /// @dev Correctable until XRPL has consumed one. A mistyped starting
+    /// sequence produces a payment that never lands, and without this the
+    /// treasury would be wedged on a typo with no way back.
+    function test_initialSequenceIsCorrectableBeforeXrplConfirmsOne() public {
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE + 10);
+        assertEq(registry.nextSequenceOf(treasuryId), START_SEQUENCE + 10);
+    }
+
+    function test_initialSequenceIsFixedOnceXrplConfirmsOne() public {
+        registry.advanceSequence(treasuryId, START_SEQUENCE);
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.SequenceAlreadyConfirmed.selector, treasuryId));
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE + 10);
+    }
+
+    function test_initialSequenceRefusedOnAFrozenTreasury() public {
+        vm.prank(guardian);
+        registry.freeze(treasuryId);
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.TreasuryFrozenError.selector, treasuryId));
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE);
     }
 
     function test_unknownPolicyCannotBackATreasury() public {
@@ -219,14 +274,18 @@ contract TreasuryRegistryTest is AegisFixture {
     }
 
     function test_sequenceAdvancesPastTheConfirmedOne() public {
-        registry.advanceSequence(treasuryId, 1);
-        assertEq(registry.nextSequenceOf(treasuryId), 2);
+        registry.advanceSequence(treasuryId, START_SEQUENCE);
+        assertEq(registry.nextSequenceOf(treasuryId), START_SEQUENCE + 1);
     }
 
     function test_sequenceCannotGoBackwards() public {
-        registry.advanceSequence(treasuryId, 5);
-        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.SequenceMustAdvance.selector, 6, 3));
-        registry.advanceSequence(treasuryId, 3);
+        registry.advanceSequence(treasuryId, START_SEQUENCE + 4);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TreasuryRegistry.SequenceMustAdvance.selector, START_SEQUENCE + 5, START_SEQUENCE + 2
+            )
+        );
+        registry.advanceSequence(treasuryId, START_SEQUENCE + 2);
     }
 
     // --- wiring -----------------------------------------------------------

@@ -10,6 +10,7 @@ import { FreezeControl } from "@/components/FreezeControl";
 import { KeygenPanel } from "@/components/KeygenPanel";
 import { XrplAccountLink } from "@/components/links";
 import { RequestList } from "@/components/RequestList";
+import { StartingSequencePanel } from "@/components/StartingSequencePanel";
 import { Badge, buttonClass, Card, FailureAlert, Loading, Stat } from "@/components/ui";
 import { WindowGauge } from "@/components/WindowGauge";
 import { useCommittedUsd, usePolicy, useRequests, useRoles, useTreasury, useXrplAccount } from "@/hooks/useAegis";
@@ -28,6 +29,10 @@ export default function TreasuryPage() {
   const requests = useRequests(treasuryId);
   const { address } = useAccount();
   const roles = useRoles(treasury.data?.policyId, address);
+  // Read once here rather than inside XrplPanel: the starting-sequence panel
+  // needs the same answer, and asking the ledger twice for it would be silly.
+  const boundAddress = treasury.data ? safeAddress(treasury.data.xrplAccountId) : null;
+  const xrplAccount = useXrplAccount(boundAddress);
 
   if (treasuryId === undefined) return <Card title="Not a treasury id">That is not a treasury id.</Card>;
   if (treasury.isPending) return <Loading what="the treasury" />;
@@ -35,7 +40,7 @@ export default function TreasuryPage() {
   if (!treasury.data) return <Card title="No such treasury">Treasury {treasuryId.toString()} does not exist.</Card>;
 
   const data = treasury.data;
-  const xrplAddress = safeAddress(data.xrplAccountId);
+  const xrplAddress = boundAddress;
   const mask = roles.data ?? 0;
   const live = (requests.data ?? []).filter((request) => isLive(request.state));
   const requestIds = new Set((requests.data ?? []).map((request) => request.id.toString()));
@@ -61,9 +66,17 @@ export default function TreasuryPage() {
         </Link>
       </header>
 
-      <XrplPanel treasuryAddress={xrplAddress} nextSequence={data.nextSequence} />
+      <XrplPanel treasuryAddress={xrplAddress} nextSequence={data.nextSequence} account={xrplAccount} />
 
       {!xrplAddress && <KeygenPanel treasury={data} canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)} />}
+
+      {xrplAddress && (
+        <StartingSequencePanel
+          treasury={data}
+          xrplSequence={xrplAccount.data ? xrplAccount.data.sequence : null}
+          canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)}
+        />
+      )}
 
       {policy.data && committed.data !== undefined && (
         <Card title="Rolling window">
@@ -113,9 +126,15 @@ export default function TreasuryPage() {
   );
 }
 
-function XrplPanel({ treasuryAddress, nextSequence }: { treasuryAddress: string | null; nextSequence: number }) {
-  const account = useXrplAccount(treasuryAddress);
-
+function XrplPanel({
+  treasuryAddress,
+  nextSequence,
+  account,
+}: {
+  treasuryAddress: string | null;
+  nextSequence: number;
+  account: ReturnType<typeof useXrplAccount>;
+}) {
   return (
     <Card title="XRPL account">
       {!treasuryAddress ? (

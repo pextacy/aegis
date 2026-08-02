@@ -21,6 +21,7 @@ export const paymentControllerAbi = [
   {"type":"error","name":"ProposerCannotApprove","inputs":[{"name":"requestId","type":"uint256","internalType":"uint256"}]},
   {"type":"error","name":"RequestNotFound","inputs":[{"name":"requestId","type":"uint256","internalType":"uint256"}]},
   {"type":"error","name":"RollingWindowExceeded","inputs":[{"name":"committed","type":"uint256","internalType":"uint256"},{"name":"requested","type":"uint256","internalType":"uint256"},{"name":"cap","type":"uint256","internalType":"uint256"}]},
+  {"type":"error","name":"SequenceNotInitialised","inputs":[{"name":"treasuryId","type":"uint256","internalType":"uint256"}]},
   {"type":"error","name":"StalePrice","inputs":[{"name":"feedTimestamp","type":"uint64","internalType":"uint64"},{"name":"nowTime","type":"uint64","internalType":"uint64"}]},
   {"type":"error","name":"TimelockNotElapsed","inputs":[{"name":"eligibleAt","type":"uint64","internalType":"uint64"},{"name":"nowTime","type":"uint64","internalType":"uint64"}]},
   {"type":"error","name":"TreasuryIsFrozen","inputs":[{"name":"treasuryId","type":"uint256","internalType":"uint256"}]},
