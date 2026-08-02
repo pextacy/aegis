@@ -210,6 +210,12 @@ docs/               PRD.md, DOCS.md, PLAN.md, phases.md
 # looks well formed.
 ./scripts/xrpl-settlement.sh
 
+# The Flare integration against real Coston2 contracts, no funded wallet.
+# Forks the chain, runs the production deploy script against the live FtsoV2,
+# FlareTeeManager and FdcVerification, prices a payment with the real oracle,
+# and confirms it refuses once that feed goes stale.
+./scripts/coston2-fork-check.sh
+
 # A payment through Flare's real instruction relay on Coston2, after
 # aegis-e2e.sh verify. Funds the treasury, records its starting sequence,
 # allowlists a destination, then propose -> approve -> dispatch -> signed.
