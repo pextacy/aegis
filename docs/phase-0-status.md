@@ -23,7 +23,7 @@ Blocker 1 has unknown latency and gates the whole project — send that request 
 
 **The proxy cannot run without the indexer.** `tee-proxy` v0.0.18 calls `database.Connect(&cfg.DB)` unconditionally in `internal/proxy/proxy.go` and panics if it fails — there is no code path that boots without a live C-chain indexer connection. The `direct` endpoint in its config looked like a possible substitute; it is not. It registers an extra `/direct` HTTP route on the external server and changes nothing about where instructions are read from. Credentials are genuinely required.
 
-**The faucet requires a human.** `https://faucet.flare.network/coston2` serves a Google reCAPTCHA (site key `6LfSHCYsAAAAAMCSBtiMuNjEqc0P5FxmRFbNW3Lv`) and grants 100 C2FLR per address per 24 hours. There is no documented API, and working around the captcha would mean defeating a third party's abuse control, which is not something to do for convenience. One click in a browser.
+**The faucet requires a human.** `https://faucet.flare.network/coston2` serves a Google reCAPTCHA (site key `6LfSHCYsAAAAAMCSBtiMuNjEqc0P5FxmRFbNW3Lv`) and grants 100 C2FLR per address per 24 hours. There is no documented API, and working around the captcha would mean defeating a third party's abuse control, which is not something to do for convenience. The one alternative that still gets cited, `coston2-faucet.towolabs.com`, no longer resolves — NXDOMAIN — so do not spend time on it. One click in a browser is the whole task.
 
 ### 1. Indexer credentials — request text
 
