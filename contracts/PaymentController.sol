@@ -34,6 +34,7 @@ contract PaymentController {
         uint64 amountDrops;
         uint256 amountUsdAtProposal;
         uint32 sequence;
+        uint32 firstLedgerSequence;
         uint32 lastLedgerSequence;
         uint64 feeDrops;
         uint8 approvals;
@@ -103,7 +104,12 @@ contract PaymentController {
     event PaymentReady(uint256 indexed requestId, uint64 eligibleAt);
     /// @notice Emitted when a signing instruction goes to the TEE.
     event PaymentDispatched(
-        uint256 indexed requestId, uint32 sequence, uint32 lastLedgerSequence, uint64 feeDrops, bytes32 policyDigest
+        uint256 indexed requestId,
+        uint32 sequence,
+        uint32 firstLedgerSequence,
+        uint32 lastLedgerSequence,
+        uint64 feeDrops,
+        bytes32 policyDigest
     );
     /// @notice Emitted when the TEE returns a signature. The submitter watches this.
     event PaymentSigned(uint256 indexed requestId, bytes signedBlob, bytes32 txHash);
@@ -132,6 +138,8 @@ contract PaymentController {
     error ZeroAmount();
     error ZeroDestination();
     error LastLedgerSequenceRequired();
+    error FirstLedgerSequenceRequired();
+    error LedgerRangeInverted(uint32 firstLedgerSequence, uint32 lastLedgerSequence);
     error ZeroFee();
     error StalePrice(uint64 feedTimestamp, uint64 nowTime);
     error InvalidPrice();
@@ -274,12 +282,27 @@ contract PaymentController {
 
     /// @notice Re-checks the whole policy against current state, then sends the
     /// signing instruction to the TEE.
+    /// @dev `firstLedgerSequence` is not part of the policy digest and the
+    /// enclave never sees it — it is not an XRPL transaction field. It exists so
+    /// that `ExecutionVerifier.confirmNonExecution` can require a proof whose
+    /// searched range covers every ledger the payment could have reached.
+    /// Without a lower bound, a one-ledger non-existence proof would "prove" a
+    /// payment absent that had in fact already landed.
     /// @param requestId The request.
+    /// @param firstLedgerSequence The current XRPL ledger. Nothing signed after
+    /// this call can appear in an earlier one.
     /// @param lastLedgerSequence The XRPL ledger after which the payment expires.
     /// @param feeDrops The XRPL fee, in drops.
-    function dispatch(uint256 requestId, uint32 lastLedgerSequence, uint64 feeDrops) external payable {
+    function dispatch(uint256 requestId, uint32 firstLedgerSequence, uint32 lastLedgerSequence, uint64 feeDrops)
+        external
+        payable
+    {
         if (address(instructionSender) == address(0)) revert InstructionSenderNotSet();
         if (lastLedgerSequence == 0) revert LastLedgerSequenceRequired();
+        if (firstLedgerSequence == 0) revert FirstLedgerSequenceRequired();
+        if (firstLedgerSequence > lastLedgerSequence) {
+            revert LedgerRangeInverted(firstLedgerSequence, lastLedgerSequence);
+        }
         if (feeDrops == 0) revert ZeroFee();
 
         PaymentRequest storage r = _requireRequest(requestId);
@@ -412,6 +435,16 @@ contract PaymentController {
     /// @return True if it approved.
     function hasApproved(uint256 requestId, address approver) external view returns (bool) {
         return _approved[requestId][approver];
+    }
+
+    /// @notice The id the next request will receive.
+    /// @dev Ids run sequentially from 1, so this is the bound a client needs to
+    /// enumerate every request of every treasury without an event index. The
+    /// dashboard is a reader of chain state, not a service that owns a copy of
+    /// it, and this is what keeps that true.
+    /// @return The next request id.
+    function nextRequestId() external view returns (uint256) {
+        return _nextRequestId;
     }
 
     /// @notice Converts drops to 18-decimal USD at the current FTSO price.

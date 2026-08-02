@@ -73,8 +73,13 @@ step "Checking preconditions"
 
 # --- The scaffold chain ----------------------------------------------------
 
-step "pre-build: deploy InstructionSender and register the extension"
-"$SCRIPT_DIR/pre-build.sh" || die "pre-build failed"
+# Deliberately not pre-build.sh: that deploys the scaffold's Hello World sender
+# and registers it as the extension. Registering the Aegis sender as a second
+# one while the TEE machine is bound to the first is what produces
+# MachineManager.TooMany(). The Aegis deploy stage writes the same
+# config/extension.env that post-build.sh reads.
+step "aegis deploy: contracts, extension registration, extension.env"
+"$SCRIPT_DIR/aegis-e2e.sh" deploy || die "Aegis deploy failed"
 
 step "start-services: redis, ext-proxy, extension-tee"
 "$SCRIPT_DIR/start-services.sh" --chain coston2 || die "start-services failed"
@@ -82,8 +87,11 @@ step "start-services: redis, ext-proxy, extension-tee"
 step "post-build: allow code version, set governance, register the TEE machine"
 "$SCRIPT_DIR/post-build.sh" || die "post-build failed"
 
-step "test: SAY_HELLO and SAY_GOODBYE end to end"
-"$SCRIPT_DIR/test.sh" || die "end-to-end test failed"
+# The enclave now answers XRPLW rather than GREETING, so the scaffold's
+# SAY_HELLO test can no longer pass. A KEYGEN completing end to end is the
+# stronger environment proof and is Phase 3's own acceptance criterion.
+step "aegis verify: policy, treasury, KEYGEN, bind"
+"$SCRIPT_DIR/aegis-e2e.sh" verify || die "Aegis end-to-end failed"
 
 # --- Exit criteria ---------------------------------------------------------
 
@@ -121,6 +129,6 @@ fi
 echo
 log "Phase 0 complete."
 log "  EXTENSION_ID        $EXTENSION_ID"
-log "  INSTRUCTION_SENDER  $INSTRUCTION_SENDER"
+log "  INSTRUCTION_SENDER  $INSTRUCTION_SENDER  (AegisInstructionSender)"
 log "  EXT_PROXY_URL       $EXT_PROXY_URL"
 log "Record these in docs/phase-0-status.md (P0-8)."

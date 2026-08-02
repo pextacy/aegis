@@ -20,7 +20,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 | 0 | Unblock the critical path | — | `[~]` one blocker: faucet |
 | 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
 | 2 | XRPL serialiser and signer in Go | — | `[x]` verified against a real XRPL blob |
-| 3 | TEE extension | 0, 1, 2 | `[ ]` |
+| 3 | TEE extension | 0, 1, 2 | `[~]` code and off-chain tests done; on-chain leg needs the faucet |
 | 4 | Settlement and proof | 3 | `[ ]` |
 | 5 | Interface and hardening | 4 | `[ ]` |
 | 6 | Multisig and PMW migration | 5 | post-program |
@@ -164,20 +164,20 @@ No XRPL library. The enclave image is the unit of attestation and must stay smal
 
 ### Tasks
 
-- [ ] **P3-1 — `AegisInstructionSender.sol`.** `OP_TYPE_XRPL = bytes32("XRPLW")`, `OP_COMMAND_KEYGEN/SIGNTX/STATUS`. Constructor, `setExtensionId()` and `_getExtensionId()` copied verbatim from the scaffold and never modified. The discovery loop starts at `FIRST_PUBLIC_EXTENSION_ID = 0x10000`; ids below are reserved for system extensions such as PMW.
-- [ ] **P3-2 — Instruction construction.** `TeeInstructionParams` with `cosigners` = guardian addresses and `cosignersThreshold` = the tier's required approval count, so FCC enforces a second authorisation gate on top of Aegis' own accounting. Machine selection via `getRandomTeeIds(_getExtensionId(), 1)`.
-- [ ] **P3-3 — `internal/config/config.go`.** `OPTypeXRPL`, the three op commands, and `Version`. Bump `Version` on every behaviour or interface change — it is part of the attestation identity.
-- [ ] **P3-4 — `pkg/types/types.go`.** `SignRequest`, `SignResponse`, `KeygenResponse`, `State`. `StateResponse` comes from the scaffold and is not modified.
-- [ ] **P3-5 — `pkg/types/register.go`.** ABI decoder registration for every message and result pair. A missing registration surfaces as a decode failure, not as a clear error.
-- [ ] **P3-6 — `internal/extension/extension.go`: routing.** Route on `opType`, sub-route on `opCommand`, three handlers. `New()` and the HTTP wiring stay as the scaffold ships them.
-- [ ] **P3-7 — `processKeygen`.** secp256k1 key from `crypto/rand` inside the enclave, stored in a `sync.RWMutex`-guarded map keyed by `treasuryId`. Never written to disk, never logged, never returned. Returns `(bytes33 compressedPubKey, string classicAddress)`.
-- [ ] **P3-8 — `processSignTx` and the digest check.** Recompute `keccak256` over the decoded fields and compare against `policyDigest` **before touching the key**. Mismatch returns status `0` with the log line `policy digest mismatch` and no signature.
-- [ ] **P3-9 — `TreasuryRegistry.bindXrplAccount` wired.** Consumes the `KEYGEN` result, derives the AccountID on-chain with precompiles `0x02` (SHA-256) and `0x03` (RIPEMD-160), rejects any mismatch with the reported classic address, rejects any second binding.
-- [ ] **P3-10 — `processStatus`.** Returns `(bool hasKey, uint32 lastSignedSequence)`. Nothing else.
-- [ ] **P3-11 — `GET /state`.** Booleans and sequence numbers only. If a struct field holding a key is reachable from a response type, that is the bug.
-- [ ] **P3-12 — `recordSignature` path.** `PaymentController.recordSignature`, restricted to `AegisInstructionSender`, moves the request to `Signed` and emits `PaymentSigned(requestId, signedBlob, txHash)` — the event the submitter watches in phase 4.
-- [ ] **P3-13 — Tamper test.** Take a real payload, alter one field, confirm status `0` and no signature. Constructing a fake payload does not test the same thing.
-- [ ] **P3-14 — Regenerate bindings.** `./scripts/generate-bindings.sh` after any ABI change.
+- [x] **P3-1 — `AegisInstructionSender.sol`.** `OP_TYPE_XRPL = bytes32("XRPLW")`, `OP_COMMAND_KEYGEN/SIGNTX/STATUS`. Constructor, `setExtensionId()` and `_getExtensionId()` copied verbatim from the scaffold and never modified. The discovery loop starts at `FIRST_PUBLIC_EXTENSION_ID = 0x10000`; ids below are reserved for system extensions such as PMW.
+- [x] **P3-2 — Instruction construction.** `TeeInstructionParams` with `cosigners` = guardian addresses and `cosignersThreshold` = the tier's required approval count, so FCC enforces a second authorisation gate on top of Aegis' own accounting. Machine selection via `getRandomTeeIds(_getExtensionId(), 1)`.
+- [x] **P3-3 — `internal/config/config.go`.** `OPTypeXRPL`, the three op commands, and `Version`. Bump `Version` on every behaviour or interface change — it is part of the attestation identity.
+- [x] **P3-4 — `pkg/types/types.go`.** `SignRequest`, `SignResponse`, `KeygenResponse`, `State`. `StateResponse` comes from the scaffold and is not modified.
+- [x] **P3-5 — `pkg/types/register.go`.** ABI decoder registration for every message and result pair. A missing registration surfaces as a decode failure, not as a clear error.
+- [x] **P3-6 — `internal/extension/extension.go`: routing.** Route on `opType`, sub-route on `opCommand`, three handlers. `New()` and the HTTP wiring stay as the scaffold ships them.
+- [x] **P3-7 — `processKeygen`.** secp256k1 key from `crypto/rand` inside the enclave, stored in a `sync.RWMutex`-guarded map keyed by `treasuryId`. Never written to disk, never logged, never returned. Returns `(bytes33 compressedPubKey, string classicAddress)`.
+- [x] **P3-8 — `processSignTx` and the digest check.** Recompute `keccak256` over the decoded fields and compare against `policyDigest` **before touching the key**. Mismatch returns status `0` with the log line `policy digest mismatch` and no signature.
+- [x] **P3-9 — `TreasuryRegistry.bindXrplAccount` wired.** Consumes the `KEYGEN` result, derives the AccountID on-chain with precompiles `0x02` (SHA-256) and `0x03` (RIPEMD-160), rejects any mismatch with the reported classic address, rejects any second binding.
+- [x] **P3-10 — `processStatus`.** Returns `(bool hasKey, uint32 lastSignedSequence)`. Nothing else.
+- [x] **P3-11 — `GET /state`.** Booleans and sequence numbers only. If a struct field holding a key is reachable from a response type, that is the bug.
+- [x] **P3-12 — `recordSignature` path.** `PaymentController.recordSignature`, restricted to `AegisInstructionSender`, moves the request to `Signed` and emits `PaymentSigned(requestId, signedBlob, txHash)` — the event the submitter watches in phase 4.
+- [x] **P3-13 — Tamper test.** Take a real payload, alter one field, confirm status `0` and no signature. Constructing a fake payload does not test the same thing.
+- [x] **P3-14 — Keep the generated artefacts in step.** The scaffold's Hello World bindings and its `tools/` deploy CLI are untouched, so `generate-bindings.sh` still does what it did; Aegis deploys through `script/DeployAegis.s.sol` instead, which needs no bindings. What did need regenerating is `testdata/conformance` — the scaffold's fixtures describe an extension that no longer exists. `AEGIS_GEN_FIXTURES=1 go test ./internal/extension -run GenerateConformance` rewrites them, and `test-conformance.sh` passes 16/16 against the Aegis wire contract.
 
 ### Verification
 

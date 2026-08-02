@@ -1,11 +1,11 @@
 {
-  "name": "15-unknown-path",
   "description": "An unknown path is 404",
+  "expect": {
+    "status": 404
+  },
+  "name": "15-unknown-path",
   "request": {
     "method": "GET",
     "path": "/does-not-exist"
-  },
-  "expect": {
-    "status": 404
   }
 }

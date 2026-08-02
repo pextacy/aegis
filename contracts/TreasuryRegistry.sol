@@ -319,6 +319,28 @@ contract TreasuryRegistry {
         return _requireTreasury(treasuryId).nextSequence;
     }
 
+    /// @notice The id the next treasury will receive.
+    /// @dev Ids run sequentially from 1, so this is the bound a client needs to
+    /// enumerate every treasury without an event index.
+    /// @return The next treasury id.
+    function nextTreasuryId() external view returns (uint256) {
+        return _nextTreasuryId;
+    }
+
+    /// @notice The id the next amendment will receive.
+    /// @return The next amendment id.
+    function nextAmendmentId() external view returns (uint256) {
+        return _nextAmendmentId;
+    }
+
+    /// @notice Whether an address has already approved an amendment.
+    /// @param amendmentId The amendment.
+    /// @param approver The address.
+    /// @return True if it approved.
+    function hasApprovedAmendment(uint256 amendmentId, address approver) external view returns (bool) {
+        return _amendmentApproved[amendmentId][approver];
+    }
+
     function _requireTreasury(uint256 treasuryId) private view returns (Treasury storage t) {
         t = _treasuries[treasuryId];
         if (t.id == 0) revert TreasuryNotFound(treasuryId);

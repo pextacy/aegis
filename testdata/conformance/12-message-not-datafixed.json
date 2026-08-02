@@ -1,19 +1,23 @@
 {
-  "name": "12-message-not-datafixed",
-  "description": "A valid-hex message that is not DataFixed JSON is 400",
-  "request": {
-    "method": "POST",
-    "path": "/action",
-    "body": {
-      "data": {
-        "id": "0x1111111111111111111111111111111111111111111111111111111111111111",
-        "type": "instruction",
-        "submissionTag": "submit",
-        "message": "0x6e6f74206a736f6e"
-      }
-    }
-  },
+  "description": "An Action whose message does not parse as DataFixed is 400. Note that a syntactically valid but empty object is not this case: it parses, yields a zero opType, and is refused as unsupported instead.",
   "expect": {
     "status": 400
+  },
+  "name": "12-message-not-datafixed",
+  "request": {
+    "body": {
+      "additionalActionData": "0x",
+      "additionalVariableMessages": [],
+      "data": {
+        "id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "message": "0x74686973206973206e6f7420446174614669786564",
+        "submissionTag": "submit",
+        "type": "instruction"
+      },
+      "signatures": [],
+      "timestamps": []
+    },
+    "method": "POST",
+    "path": "/action"
   }
 }

@@ -234,6 +234,16 @@ contract PolicyEngine {
         return _policies[policyId].id != 0;
     }
 
+    /// @notice The id the next policy will receive.
+    /// @dev Ids run sequentially from 1, so this is the bound a client needs to
+    /// enumerate every policy. The dashboard reads its state from the chain
+    /// rather than from an Aegis service, which is only possible if the id space
+    /// is walkable without an event index.
+    /// @return The next policy id.
+    function nextPolicyId() external view returns (uint256) {
+        return _nextPolicyId;
+    }
+
     function _resolveTier(uint256 policyId, uint256 amountUsd) private view returns (Tier memory) {
         _requireExists(policyId);
         Tier[] storage tiers = _policies[policyId].tiers;
