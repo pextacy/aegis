@@ -126,20 +126,24 @@ Close the loop. This is what separates Aegis from a signing service.
 1. `submitter/src/watcher.ts` — websocket subscription to `PaymentSigned` on Coston2.
 2. `submitter/src/xrpl.ts` — submit to XRPL Testnet at `wss://s.altnet.rippletest.net:51233`, poll `tx` until `validated: true` or `LastLedgerSequence` passes.
 3. `submitter/src/fdc.ts` — request a `Payment` attestation with `sourceId = testXRP`, wait for round finality, retrieve the Merkle proof from the DA layer.
-4. `ExecutionVerifier.sol` — `confirmSettlement` verifying source, destination, amount, and the memo reference against `keccak256(abi.encode(requestId))`; `confirmNonExecution` consuming a `ReferencedPaymentNonexistence` proof.
-5. Window spend release and sequence advance on the failure path.
+4. `ExecutionVerifier.sol` — `confirmSettlement` verifying source, destination, amount, and the memo reference against `keccak256(abi.encode(requestId))`; `confirmFailedExecution` for a payment that reached a ledger and failed there; `confirmNonExecution` consuming a `ReferencedPaymentNonexistence` proof.
+5. Window spend release on both failure paths, and a sequence advance on the one where a ledger actually consumed the sequence.
 
 ### Acceptance
 
 - A payment settles on XRPL Testnet and the FDC proof moves the on-chain state to `Settled`.
 - A proof for a different transaction is rejected by `confirmSettlement`.
-- A transaction deliberately allowed to expire past `LastLedgerSequence` is proven non-existent, moves to `Failed`, releases the committed window spend, and advances the sequence so the next payment is not wedged.
+- A transaction deliberately allowed to expire past `LastLedgerSequence` is proven non-existent, moves to `Failed`, and releases the committed window spend, so the next payment is not wedged.
 - The submitter holds no authority: manually calling `confirmSettlement` with a fabricated proof reverts.
 - Running two submitters simultaneously causes no double-spend and no state corruption.
 
 ### Notes
 
-The sequence advance on the failure path is easy to skip and catastrophic to omit. Without it, one expired transaction blocks the treasury permanently, because XRPL will keep expecting that sequence number.
+The sequence is the part of this phase that is easy to get backwards. An XRPL transaction consumes its sequence only by reaching a ledger. One that expired without being included consumed nothing, and the account still expects that number — so `confirmNonExecution` leaves `nextSequence` alone and the following payment reuses it. Advancing there is what would block the treasury permanently, not what prevents it.
+
+The case that *does* need an advance is a `tec`-coded transaction: it reached a ledger, burned the fee, consumed the sequence and delivered nothing. A non-existence attestation counts only successful payments, so it would happily prove that transaction absent — which is why it gets its own path, `confirmFailedExecution`, driven by a `Payment` proof whose `status` is non-zero. That proof is positive evidence a ledger consumed the sequence.
+
+A non-existence proof is only as strong as the range it searched, and whoever requests the attestation chooses that range. `dispatch` therefore records `firstLedgerSequence`, the ledger current at dispatch, and the contract requires the proof to cover `[firstLedgerSequence, lastLedgerSequence]` in full. It is not part of the policy digest and the enclave never sees it — it is not an XRPL field.
 
 ---
 

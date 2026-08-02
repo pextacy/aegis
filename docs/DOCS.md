@@ -205,10 +205,17 @@ TEE machine selection uses `TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId
 
 Consumes FDC attestations to close the loop.
 
-- `confirmSettlement(uint256 requestId, IPayment.Proof calldata proof)` — calls `ContractRegistry.getFdcVerification().verifyPayment(proof)`, then asserts that the attested source address equals the treasury AccountID, the receiving address equals `destinationAccountId`, `spentAmount` equals `amountDrops + feeDrops`, and the standard payment reference matches `keccak256(abi.encode(requestId))` as carried in the XRPL memo. On success: state → `Settled`, `TreasuryRegistry.advanceSequence`.
-- `confirmNonExecution(uint256 requestId, IReferencedPaymentNonexistence.Proof calldata proof)` — proves the payment did not appear before `lastLedgerSequence`. State → `Failed`, rolling-window spend released, sequence advanced so the treasury is not wedged.
+- `confirmSettlement(uint256 requestId, IPayment.Proof calldata proof)` — calls `verifyPayment(proof)`, then asserts the attestation type and source id, that the standard payment reference matches `keccak256(abi.encode(requestId))` as carried in the XRPL memo, that the attested source address hash equals the treasury's classic address, that the receiving address equals `destinationAccountId` re-encoded on-chain, and that `spentAmount` equals `amountDrops + feeDrops`. Requires `status == 0`. On success: state → `Settled`, `TreasuryRegistry.advanceSequence`.
+- `confirmFailedExecution(uint256 requestId, IPayment.Proof calldata proof)` — the same proof type with a non-zero `status`: the transaction reached a ledger, burned its fee and delivered nothing. The *intended* destination and spend are what the attestation reports in that case, and those are what is checked. State → `Failed`, window spend released, **sequence advanced** — a ledger consumed it.
+- `confirmNonExecution(uint256 requestId, IReferencedPaymentNonexistence.Proof calldata proof)` — proves the payment never appeared. The proof's searched range must cover `[firstLedgerSequence, lastLedgerSequence]` in full, its amount threshold must not exceed the payment, and it must not be constrained to particular source addresses; each of those would narrow the claim. State → `Failed`, window spend released, sequence **not** advanced.
 
-These two paths are why the TEE never needs to know whether a transaction landed. On-chain state is reconciled from proofs, not from the submitter's word.
+Address comparison is by text, not by bytes: FDC reports `keccak256(abi.encode(classicAddressString))`, so the destination AccountID is re-encoded to base58check on-chain before hashing. `ExecutionVerifier.addressHashOf` exposes that, and the submitter reads it rather than re-implementing it.
+
+Every entry point returns quietly on a request that already reached `Settled` or `Failed`, emitting `ProofAlreadyConsumed`. Two submitters racing is the expected deployment, not an error, and neither can overturn what the other proved.
+
+These three paths are why the TEE never needs to know whether a transaction landed. On-chain state is reconciled from proofs, not from the submitter's word.
+
+**On the sequence.** An XRPL transaction consumes its sequence by reaching a ledger, and only then. This is why the two failure paths differ: a `tec`-coded transaction is in a ledger and the treasury must move past it, while an expired one never was and the account still expects that number. Advancing after a non-execution proof is what would wedge a treasury permanently — every later payment would carry a sequence the account never reaches. A non-existence attestation cannot tell the two apart, because it counts only successful payments; the `Payment` proof with a non-zero status is what distinguishes them, and the submitter takes that path whenever the transaction exists at all.
 
 ### 3.6 FTSO integration
 
@@ -349,10 +356,12 @@ The framework defines three:
 
 A small TypeScript daemon. Real network calls, no simulation.
 
-1. Subscribes to `PaymentSigned(uint256 requestId, bytes signedBlob, bytes32 txHash)` on Coston2 via a websocket provider.
-2. Submits the blob to XRPL Testnet (`wss://s.altnet.rippletest.net:51233`) with `submit` and waits for validation by polling `tx` until `validated: true` or `LastLedgerSequence` is passed.
-3. On validation, requests a `Payment` attestation from the Coston2 FDC verifier server with `sourceId = testXRP` and the transaction hash, waits for the round to finalise, retrieves the Merkle proof from the DA layer, and calls `ExecutionVerifier.confirmSettlement(requestId, proof)`.
-4. If the ledger passes `LastLedgerSequence` with no validated transaction, it requests a `ReferencedPaymentNonexistence` attestation instead and calls `confirmNonExecution`.
+1. Subscribes to `PaymentSigned(uint256 requestId, bytes signedBlob, bytes32 txHash)` on Coston2 via a websocket provider, after replaying from a persisted cursor so a signature emitted while it was down is picked up rather than lost. The replay walks the range in 30-block windows, which is what the public Coston2 RPC actually serves for `eth_getLogs`.
+2. Submits the blob to XRPL Testnet (`wss://s.altnet.rippletest.net:51233`) with `submit` and waits for validation by polling `tx` until `validated: true` or `LastLedgerSequence` is passed. The `submit` engine result is logged and never acted on — with two submitters running, one of them gets a duplicate-transaction error for a payment that is about to settle fine. Only the ledger decides.
+3. On validation, requests a `Payment` attestation from the Coston2 FDC verifier server with `sourceId = testXRP` and the transaction hash, pays the fee `FdcRequestFeeConfigurations` quotes for that exact request, derives the voting round from the request transaction's block timestamp, retrieves the Merkle proof from the DA layer, and calls `confirmSettlement` — or `confirmFailedExecution` when the validated transaction carries a `tec` result.
+4. If the ledger passes `LastLedgerSequence` with no validated transaction, it requests a `ReferencedPaymentNonexistence` attestation over exactly `[firstLedgerSequence, lastLedgerSequence]` and calls `confirmNonExecution`.
+
+A payment it cannot carry to a proof stays in `Signed` and is retried on the next replay. There is no path in the submitter that concludes an outcome it did not observe.
 
 The submitter holds no keys that can move funds. Its only on-chain authority is submitting proofs, and a proof that does not verify is rejected by the contract. Anyone can run one; it is a liveness helper, not a trust assumption.
 

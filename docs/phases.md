@@ -21,8 +21,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 | 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
 | 2 | XRPL serialiser and signer in Go | — | `[x]` verified against a real XRPL blob |
 | 3 | TEE extension | 0, 1, 2 | `[~]` full cycle proven on a local chain; Coston2 run needs the faucet |
-| 4 | Settlement and proof | 3 | `[ ]` |
-| 5 | Interface and hardening | 4 | `[ ]` |
+| 4 | Settlement and proof | 3 | `[~]` code complete, 33 settlement tests and 87 submitter tests; live XRPL run needs the faucet |
+| 5 | Interface and hardening | 4 | `[~]` dashboard complete, 32 tests; video and rehearsal need the faucet |
 | 6 | Multisig and PMW migration | 5 | post-program |
 
 Phases 0, 1 and 2 have no dependency on each other. The original plan expected P0-1 (indexer credentials) to set the schedule; running our own indexer removed that, so the only thing outstanding in phase 0 is funding the deployer from a captcha-gated faucet.
@@ -215,34 +215,52 @@ Keys are born in the enclave, never imported. The scaffold's ECIES `/decrypt` pa
 
 ### Tasks
 
-- [ ] **P4-1 — `submitter/src/watcher.ts`.** Websocket subscription to `PaymentSigned` on Coston2. Reconnect and replay from the last processed block on restart.
-- [ ] **P4-2 — `submitter/src/xrpl.ts`: submit.** `submit` the blob to `wss://s.altnet.rippletest.net:51233`.
-- [ ] **P4-3 — `submitter/src/xrpl.ts`: confirm.** Poll `tx` until `validated: true`, or until the ledger passes `LastLedgerSequence`. Those are the only two terminal outcomes.
-- [ ] **P4-4 — `submitter/src/fdc.ts`: `Payment` attestation.** Request with `sourceId = testXRP` and the transaction hash, wait for round finality, retrieve the Merkle proof from the DA layer.
-- [ ] **P4-5 — `submitter/src/fdc.ts`: `ReferencedPaymentNonexistence`.** The failure branch, taken when the ledger passes `LastLedgerSequence` with nothing validated.
-- [ ] **P4-6 — `ExecutionVerifier.confirmSettlement`.** `ContractRegistry.getFdcVerification().verifyPayment(proof)`, then assert attested source == treasury AccountID, receiving address == `destinationAccountId`, `spentAmount` == `amountDrops + feeDrops`, and payment reference == `keccak256(abi.encode(requestId))`. On success: state → `Settled`, `advanceSequence`.
-- [ ] **P4-7 — `ExecutionVerifier.confirmNonExecution`.** Consumes the non-existence proof. State → `Failed`, rolling-window spend released, **sequence advanced**.
-- [ ] **P4-8 — Window release accounting.** The committed spend from P1-12 is returned when a request ends `Failed`, and only then.
-- [ ] **P4-9 — Idempotency and concurrency.** Two submitters running simultaneously cause no double-spend and no state corruption. Re-submitting an already-settled request is a no-op, not a revert loop.
+- [x] **P4-1 — `submitter/src/watcher.ts`.** Websocket subscription to `PaymentSigned` on Coston2, plus a replay from the persisted cursor to the head on start. The cursor is written per chunk and per handled log, atomically. A malformed cursor file is an error rather than a reason to restart from block zero, which would look like a hang. Replay is walked in 30-block windows because that is what the public Coston2 RPC actually serves.
+- [x] **P4-2 — `submitter/src/xrpl.ts`: submit.** `submit` the blob to `wss://s.altnet.rippletest.net:51233`. The engine result is logged and never acted on — two submitters racing means one of them gets a duplicate-transaction error for a payment that is about to settle perfectly well.
+- [x] **P4-3 — `submitter/src/xrpl.ts`: confirm.** Poll `tx` until `validated: true`, or until the ledger passes `LastLedgerSequence`. Those are the only two terminal outcomes; `classifyOutcome` returns neither while a transaction is sitting unvalidated in an open ledger, and the polling budget runs out into an error rather than a guess.
+- [x] **P4-4 — `submitter/src/fdc.ts`: `Payment` attestation.** Prepare at the verifier server, `FdcHub.requestAttestation` paying the fee `FdcRequestFeeConfigurations` quotes for that exact request, derive the voting round from the receipt's block timestamp, then poll the DA layer's raw endpoint and `decodeAbiParameters` the response into the struct the contract takes.
+- [x] **P4-5 — `submitter/src/fdc.ts`: `ReferencedPaymentNonexistence`.** The failure branch, taken when the ledger passes `LastLedgerSequence` with nothing validated. The searched range is exactly `[firstLedgerSequence, lastLedgerSequence]` and the source-address constraint is off, because both narrow the claim and `ExecutionVerifier` rejects a proof that narrowed it.
+- [x] **P4-6 — `ExecutionVerifier.confirmSettlement`.** `verifyPayment(proof)`, then assert the attestation type, the source id, the memo reference == `keccak256(abi.encode(requestId))`, attested source == the treasury's classic address, receiving address == `destinationAccountId` re-encoded on-chain, and `spentAmount` == `amountDrops + feeDrops`. On success: state → `Settled`, `advanceSequence`.
+- [x] **P4-6b — `ExecutionVerifier.confirmFailedExecution`.** Not in the original plan, and required. A `tec`-coded payment is *in* a ledger: it burned the fee, consumed the sequence, and delivered nothing. It takes a `Payment` proof with a non-zero `status`, checks the *intended* destination and amount, and ends `Failed` with the window released and the **sequence advanced**. Without this path such a payment can only be proven through P4-7, which does not advance — and the treasury then reuses a sequence XRPL has already passed, forever.
+- [x] **P4-7 — `ExecutionVerifier.confirmNonExecution`.** Consumes the non-existence proof. State → `Failed`, rolling-window spend released, and the sequence deliberately **not** advanced — see the correction in the notes below.
+- [x] **P4-8 — Window release accounting.** The committed spend from P1-12 is returned when a request ends `Failed`, and only then. A settled payment keeps its spend; both failure paths return it.
+- [x] **P4-9 — Idempotency and concurrency.** Every entry point returns quietly on a request that already reached `Settled` or `Failed`, emitting `ProofAlreadyConsumed`, so a second submitter with a valid proof neither reverts nor overturns the first. In-process, a request already being worked on is skipped. Tested both ways round: a non-existence proof cannot un-settle a settled payment, and a settlement proof cannot un-fail a proven failure.
+- [x] **P4-10 — `firstLedgerSequence`.** `dispatch` takes the XRPL ledger current at dispatch and stores it. It is not part of the policy digest and the enclave never sees it — it is not an XRPL transaction field. It exists so `confirmNonExecution` can require a search range that covers every ledger the payment could have reached; without a lower bound, a one-ledger non-existence proof would "prove" a payment absent that had already landed.
 
 ### Verification
 
 ```bash
-cd submitter && npm run build && npm test
 forge test -vvv --match-contract ExecutionVerifier
+cd submitter && npm install && npm run typecheck && npm run build && npm test
 ```
+
+The submitter's ABI declarations are checked against `out/` rather than against a second copy written by hand, so `forge build` has to have run first. A field reordered in Solidity fails `test/abi.test.ts` immediately instead of surfacing as a proof that will not verify on-chain.
 
 ### Exit criteria
 
-- A payment settles on XRPL Testnet and the FDC proof moves on-chain state to `Settled`.
-- A proof for a different transaction is rejected by `confirmSettlement`.
-- A transaction deliberately allowed to expire past `LastLedgerSequence` is proven non-existent, moves to `Failed`, releases the committed window spend, and advances the sequence so the next payment is not wedged.
-- Manually calling `confirmSettlement` with a fabricated proof reverts — the submitter holds no authority.
-- Two submitters running at once produce no double-spend and no state corruption.
+Contract-side, all proven under `forge test` against an FDC double that attests exact responses rather than accepting a flag — so "a fabricated proof is rejected" and "a tampered proof is rejected" are assertions about the Merkle leaf, not about a boolean the test set:
+
+- A `Payment` proof matching every authorised field moves on-chain state to `Settled` and advances the sequence.
+- A proof for a different transaction is rejected by `confirmSettlement` — as is one from another account, to another destination, for another amount, of another attestation type, or from another chain.
+- A proof altered after attestation fails verification, because the leaf no longer matches.
+- Calling `confirmSettlement` with a fabricated proof reverts `ProofNotVerified` — the submitter holds no authority.
+- A transaction allowed to expire past `LastLedgerSequence` is proven non-existent, moves to `Failed`, and releases the committed window spend, freeing capacity for the next payment.
+- A non-existence proof whose search starts after dispatch, ends before expiry, sets a threshold above the amount, or constrains source addresses is rejected.
+- Two submitters with the same valid proof settle once; neither failure path can overturn a settlement, and settlement cannot overturn a proven failure.
+
+Still outstanding, because it needs a funded deployer on Coston2 (P0-2):
+
+- [ ] A payment settling on XRPL Testnet with the FDC proof moving the live contract to `Settled`.
 
 ### Notes
 
-The sequence advance on the failure path is easy to skip and catastrophic to omit. Without it, one expired transaction blocks the treasury permanently, because XRPL keeps expecting that sequence number.
+**Correction to the original plan.** `PLAN.md` says the non-execution path advances the sequence "so the next payment is not wedged". That is backwards, and this is the one place in phase 4 worth reading twice.
+
+An XRPL transaction consumes its sequence only by being *included in a ledger*. One that expired past `LastLedgerSequence` without ever being included consumed nothing, and the account still expects that number. Advancing there is what wedges the treasury: every later payment would carry a sequence the account will never reach. Leaving `nextSequence` alone is what keeps it usable — the next dispatch simply reuses it, and the expired transaction can never be replayed because it is past its own expiry ledger.
+
+The case the original wording was reaching for is real, though, and it is not this one. A `tec`-coded transaction *is* in a ledger — fee burned, sequence consumed, nothing delivered — and a non-existence attestation will happily prove it absent, because that attestation only counts *successful* payments. Proving that through `confirmNonExecution` is exactly the permanent wedge the plan warned about. So it gets its own path, P4-6b, driven by a `Payment` proof with a non-zero `status`, which is positive evidence that a ledger consumed the sequence. The submitter always takes the `Payment` path when the transaction exists at all, and the non-existence path only when nothing was included.
+
+`firstLedgerSequence` (P4-10) is the other thing the plan did not anticipate. A non-existence proof is only as strong as the range it searched, and the range is chosen by whoever requests the attestation. Without a lower bound recorded at dispatch, a one-ledger proof would satisfy the deadline check while saying nothing about the ledgers where the payment actually landed — releasing a window spend for money that had already moved.
 
 The submitter is a liveness helper, not a trust assumption. Anyone can run one. Its only on-chain authority is submitting proofs, and a proof that does not verify is rejected by the contract.
 
@@ -256,24 +274,24 @@ The submitter is a liveness helper, not a trust assumption. Anyone can run one. 
 
 ### Tasks
 
-- [ ] **P5-1 — Treasury overview.** Balance, active policy summary, pending requests with tier and unlock countdown, complete audit log.
-- [ ] **P5-2 — Policy authoring.** Tier editor, rolling window, allowlist, roles, amendment parameters. Reject an invalid tier ordering in the form, not at the revert.
-- [ ] **P5-3 — Proposal creation with live validation.** Run the policy check client-side before submission, so a violating proposal is refused before it costs gas or an approver's attention.
-- [ ] **P5-4 — Approval screen.** Destination address, destination tag, amount in drops **and** XRP **and** USD, resolved tier, approvals collected and required, unlock time, policy digest. Every fact the contract will check.
-- [ ] **P5-5 — Countdown timers and window gauge.** Live timelock countdowns and a rolling-window consumption gauge.
-- [ ] **P5-6 — Guardian freeze.** One click, with confirmation. No threshold, no delay — that is the point of a guardian.
-- [ ] **P5-7 — Error surfacing.** Every custom Solidity error mapped to a plain-language explanation naming the rule that fired.
-- [ ] **P5-8 — Audit log links.** Every request links to its Coston2 transactions and its XRPL transaction.
-- [ ] **P5-9 — README.** From-zero setup path, including the indexer credential request as step one, since nothing runs without it.
-- [ ] **P5-10 — Hygiene sweep.** `grep -rn "TODO\|FIXME\|XXX\|placeholder\|mock" --include="*.sol" --include="*.go" --include="*.ts" contracts/ aegis-fce/ submitter/ web/src/` returns nothing.
-- [ ] **P5-11 — Demo video.** 90 seconds: a policy-compliant payment settling, and a policy-violating payment being refused with the rule named.
-- [ ] **P5-12 — Demo rehearsal.** Run the full path end-to-end at least twice. If FTSO is stale during a live demo, that is the fail-closed design working — say so; a fallback price would be a weaker answer.
+- [x] **P5-1 — Treasury overview.** `web/src/app/treasuries/[treasuryId]/page.tsx`. XRPL address and live balance from XRPL Testnet, the registry's next sequence beside the ledger's own, active policy summary, payments in flight with tier and unlock countdown, and the audit log for that treasury.
+- [x] **P5-2 — Policy authoring.** `web/src/app/policies/new/page.tsx`. Tier editor, rolling window, allowlist enforcement, amendment parameters — every rule `createPolicy` would revert on is rejected in the form first, in the words the rule uses. Roles and the allowlist are edited on the policy page, because they are membership rather than rules.
+- [x] **P5-3 — Proposal creation with live validation.** `web/src/app/treasuries/[treasuryId]/propose/page.tsx`. Each rule is its own line, evaluated against live chain state — role, freeze, address checksum, allowlist, FTSO freshness, tier, window — and the last line is an `eth_call` simulation of `propose` itself, so the contract has the final word before the wallet is ever asked.
+- [x] **P5-4 — Approval screen.** `web/src/app/requests/[requestId]/page.tsx`. Destination, tag (stated as "none", not as a zero), amount in drops **and** XRP **and** USD at proposal **and** USD live, resolved tier, approvals collected and required, unlock time, and the policy digest with the sequence, ledger range and fee it covers.
+- [x] **P5-5 — Countdown timers and window gauge.** `Countdown.tsx` and `WindowGauge.tsx`. The gauge shows committed spend and the proposed payment as separate segments, which is the difference between "there is room" and "there is room for this".
+- [x] **P5-6 — Guardian freeze.** `FreezeControl.tsx`, one click behind one confirmation, plus the amendment panel for the unfreeze path — the asymmetry between the two is the point, and both are on the same page.
+- [x] **P5-7 — Error surfacing.** `web/src/lib/errors.ts` maps every custom error in all five contracts to a plain-language explanation naming the rule. `web/test/errors.test.ts` proves the coverage mechanically against the generated ABIs, so an error added to a contract without an explanation fails the build rather than reaching a user as a bare selector.
+- [x] **P5-8 — Audit log links.** `AuditLogView.tsx` over `web/src/lib/logs.ts`. Every entry links to its Coston2 transaction, and a signature links to its XRPL transaction. The signer and verifier addresses are discovered from the contracts rather than configured, so their events join the scan as soon as they are wired.
+- [x] **P5-9 — README.** `README.md` — from zero to a settled payment. The indexer credential request is *not* step one: `./scripts/indexer.sh up` runs our own, and P0-1 recorded why.
+- [x] **P5-10 — Hygiene sweep.** Clean, with one thing worth knowing: the sweep's `placeholder` term also matches the HTML `placeholder=` attribute and Tailwind's `placeholder:` variant, which are input hints rather than unfilled values. Use `grep -rn "TODO\|FIXME\|XXX\|mock" --include="*.sol" --include="*.go" --include="*.ts" --include="*.tsx" contracts/ go/ submitter/src/ web/src/` and read any `placeholder` hits rather than counting them. The three remaining `TODO`s are in scaffold interface files that `CLAUDE.md` marks do-not-modify, waiting on `flare-smart-contracts-v2` being published as a package.
+- [ ] **P5-11 — Demo video.** 90 seconds: a policy-compliant payment settling, and a policy-violating payment being refused with the rule named. Needs a funded deployer first (P0-2).
+- [ ] **P5-12 — Demo rehearsal.** Run the full path end-to-end at least twice. Needs a funded deployer first (P0-2). If FTSO is stale during a live demo, that is the fail-closed design working — say so; a fallback price would be a weaker answer.
 
 ### Verification
 
 ```bash
-cd web && npm run build
-forge test && (cd aegis-fce && go test ./...) && (cd submitter && npm test)
+cd web && npm run typecheck && npm test && npm run build
+forge test && (cd go && go test ./...) && (cd submitter && npm test)
 ```
 
 ### Exit criteria
