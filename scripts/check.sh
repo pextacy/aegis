@@ -79,7 +79,21 @@ if want contracts; then
     step "Contracts"
     if command -v forge >/dev/null; then
         run "forge build" forge build
-        run "forge test" forge test
+        # test/fork is excluded here and run once, on its own, below. Letting it
+        # run in both places is not merely wasteful: it doubles the requests to
+        # a public endpoint and earns an HTTP 429, which surfaces as a test
+        # failure that has nothing to do with the code.
+        run "forge test" forge test --no-match-path 'test/fork/*'
+
+        # The fork tests check our FDC proof encoding against Flare's real
+        # verifier rather than against a double we wrote. They skip themselves
+        # without an RPC, and are reported separately so a green "forge test"
+        # can never quietly mean "three fewer tests ran".
+        if [[ -n "${COSTON2_RPC_URL:-}" ]]; then
+            run "forge test (Coston2 fork)" forge test --match-path 'test/fork/*'
+        else
+            skip "fork tests — set COSTON2_RPC_URL to run them against real Coston2 contracts"
+        fi
         run "forge fmt --check" forge fmt --check
     else
         skip "forge not installed"

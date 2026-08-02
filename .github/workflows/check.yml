@@ -77,7 +77,16 @@ jobs:
       - name: Build contracts
         run: forge build
 
+      # COSTON2_RPC_URL turns on the fork tests, which check our FDC proof
+      # encoding against Flare's real FdcVerification rather than against a
+      # double we wrote. The public endpoint needs no credentials. It does make
+      # the job depend on a third party being up — accepted deliberately,
+      # because the alternative is never checking the one thing no offline test
+      # can see, and --strict means an unavailable RPC fails loudly instead of
+      # quietly skipping three tests inside a green run.
       - name: check.sh --strict
+        env:
+          COSTON2_RPC_URL: https://coston2-api.flare.network/ext/C/rpc
         run: ./scripts/check.sh --strict
 
       # Advisory data changes without the repository changing, so this is its
