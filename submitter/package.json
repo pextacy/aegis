@@ -1,0 +1,26 @@
+{
+  "name": "aegis-submitter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Watches PaymentSigned on Coston2, submits the signed blob to XRPL Testnet, and closes the loop with an FDC proof",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "viem": "2.21.55",
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/ws": "8.5.13",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}

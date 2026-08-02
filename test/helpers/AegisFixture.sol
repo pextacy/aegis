@@ -59,10 +59,11 @@ abstract contract AegisFixture is Test {
 
         // This test contract wires the collaborators and stands in for the
         // instruction sender on the registry, so bindXrplAccount is reachable.
+        address verifier = _executionVerifier();
         registry.setInstructionSender(address(this));
-        registry.setExecutionVerifier(address(this));
+        registry.setExecutionVerifier(verifier);
         controller.setInstructionSender(sender);
-        controller.setExecutionVerifier(address(this));
+        controller.setExecutionVerifier(verifier);
 
         setPrice(XRP_PRICE, uint64(block.timestamp));
 
@@ -84,6 +85,14 @@ abstract contract AegisFixture is Test {
         vm.stopPrank();
 
         registry.bindXrplAccount(treasuryId, PUBKEY, CLASSIC);
+    }
+
+    /// @dev The address wired as execution verifier. Tests of the state machine
+    /// itself drive `markSettled` and `markFailed` directly, so the default is
+    /// this contract; the settlement tests deploy the real ExecutionVerifier here
+    /// and reach the same functions through a proof.
+    function _executionVerifier() internal virtual returns (address) {
+        return address(this);
     }
 
     function setPrice(uint256 value, uint64 timestamp) internal {

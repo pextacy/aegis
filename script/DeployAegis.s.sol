@@ -4,15 +4,17 @@ pragma solidity ^0.8.27;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {AegisInstructionSender} from "../contracts/AegisInstructionSender.sol";
+import {ExecutionVerifier} from "../contracts/ExecutionVerifier.sol";
 import {PaymentController} from "../contracts/PaymentController.sol";
 import {PolicyEngine} from "../contracts/PolicyEngine.sol";
 import {TreasuryRegistry} from "../contracts/TreasuryRegistry.sol";
+import {IFdcVerification} from "../contracts/interfaces/IFdcVerification.sol";
 import {IFtsoV2} from "../contracts/interfaces/IFtsoV2.sol";
 import {ITeeExtensionRegistry} from "../contracts/interfaces/ITeeExtensionRegistry.sol";
 import {ITeeMachineRegistry} from "../contracts/interfaces/ITeeMachineRegistry.sol";
 
 /// @title DeployAegis
-/// @notice Deploys the five Aegis contracts and wires them together.
+/// @notice Deploys the Aegis contracts and wires them together.
 /// @dev Deliberately separate from the scaffold's deploy-contract tool, which
 /// stays untouched so the Hello World end-to-end path keeps working. Register
 /// the address this prints with the scaffold's own tool:
@@ -29,6 +31,7 @@ contract DeployAegis is Script {
         address teeExtensionRegistry = vm.envAddress("TEE_EXTENSION_REGISTRY_ADDRESS");
         address teeMachineRegistry = vm.envAddress("TEE_MACHINE_REGISTRY_ADDRESS");
         address resultSubmitter = vm.envAddress("RESULT_SUBMITTER_ADDRESS");
+        address fdcVerification = vm.envAddress("FDC_VERIFICATION_ADDRESS");
 
         vm.startBroadcast();
 
@@ -40,9 +43,13 @@ contract DeployAegis is Script {
             ITeeExtensionRegistry(teeExtensionRegistry), ITeeMachineRegistry(teeMachineRegistry), registry, policy
         );
 
+        ExecutionVerifier verifier = new ExecutionVerifier(controller, registry, IFdcVerification(fdcVerification));
+
         // Each of these is one-shot; a redeploy means new contracts, not a rewire.
         registry.setInstructionSender(address(sender));
+        registry.setExecutionVerifier(address(verifier));
         controller.setInstructionSender(sender);
+        controller.setExecutionVerifier(address(verifier));
         sender.setPaymentController(controller);
         sender.setResultSubmitter(resultSubmitter);
 
@@ -52,10 +59,9 @@ contract DeployAegis is Script {
         console.log("TREASURY_REGISTRY        ", address(registry));
         console.log("PAYMENT_CONTROLLER       ", address(controller));
         console.log("AEGIS_INSTRUCTION_SENDER ", address(sender));
+        console.log("EXECUTION_VERIFIER       ", address(verifier));
         console.log("");
         console.log("Register the sender, then call setExtensionId() on it.");
-        console.log("ExecutionVerifier is wired in phase 4:");
-        console.log("  registry.setExecutionVerifier(<verifier>)");
-        console.log("  controller.setExecutionVerifier(<verifier>)");
+        console.log("Then point the submitter at PAYMENT_CONTROLLER and EXECUTION_VERIFIER.");
     }
 }

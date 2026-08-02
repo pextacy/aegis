@@ -56,13 +56,34 @@ contract PolicyDigestTest is Test {
     /// width has to change it, or a reordering on one side would go unnoticed.
     function test_fieldOrderIsLoadBearing() public view {
         bytes32 normal = controller.policyDigest(
-            REQUEST_ID, TREASURY_ID, DESTINATION, DESTINATION_TAG, AMOUNT_DROPS, SEQUENCE, LAST_LEDGER_SEQUENCE, FEE_DROPS
+            REQUEST_ID,
+            TREASURY_ID,
+            DESTINATION,
+            DESTINATION_TAG,
+            AMOUNT_DROPS,
+            SEQUENCE,
+            LAST_LEDGER_SEQUENCE,
+            FEE_DROPS
         );
         bytes32 swappedIds = controller.policyDigest(
-            TREASURY_ID, REQUEST_ID, DESTINATION, DESTINATION_TAG, AMOUNT_DROPS, SEQUENCE, LAST_LEDGER_SEQUENCE, FEE_DROPS
+            TREASURY_ID,
+            REQUEST_ID,
+            DESTINATION,
+            DESTINATION_TAG,
+            AMOUNT_DROPS,
+            SEQUENCE,
+            LAST_LEDGER_SEQUENCE,
+            FEE_DROPS
         );
         bytes32 swappedSequences = controller.policyDigest(
-            REQUEST_ID, TREASURY_ID, DESTINATION, DESTINATION_TAG, AMOUNT_DROPS, LAST_LEDGER_SEQUENCE, SEQUENCE, FEE_DROPS
+            REQUEST_ID,
+            TREASURY_ID,
+            DESTINATION,
+            DESTINATION_TAG,
+            AMOUNT_DROPS,
+            LAST_LEDGER_SEQUENCE,
+            SEQUENCE,
+            FEE_DROPS
         );
 
         assertTrue(normal != swappedIds, "swapping requestId and treasuryId must change the digest");
@@ -71,7 +92,14 @@ contract PolicyDigestTest is Test {
 
     function test_everyFieldAffectsTheDigest() public view {
         bytes32 base = controller.policyDigest(
-            REQUEST_ID, TREASURY_ID, DESTINATION, DESTINATION_TAG, AMOUNT_DROPS, SEQUENCE, LAST_LEDGER_SEQUENCE, FEE_DROPS
+            REQUEST_ID,
+            TREASURY_ID,
+            DESTINATION,
+            DESTINATION_TAG,
+            AMOUNT_DROPS,
+            SEQUENCE,
+            LAST_LEDGER_SEQUENCE,
+            FEE_DROPS
         );
 
         assertTrue(

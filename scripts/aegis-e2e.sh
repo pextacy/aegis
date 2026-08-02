@@ -57,6 +57,7 @@ addr_of() { jq -r --arg n "$1" '.[] | select(.name == $n) | .address' "$ADDRESSE
 FTSO_V2_ADDRESS="$(addr_of FtsoV2)"
 TEE_EXTENSION_REGISTRY_ADDRESS="$(addr_of TeeExtensionRegistry)"
 TEE_MACHINE_REGISTRY_ADDRESS="$(addr_of TeeMachineRegistry)"
+FDC_VERIFICATION_ADDRESS="$(addr_of FdcVerification)"
 
 # The registries are named differently across deployments; fall back to the
 # manager entry the deploy tool uses rather than guessing silently.
@@ -65,13 +66,14 @@ TEE_MACHINE_REGISTRY_ADDRESS="$(addr_of TeeMachineRegistry)"
 [[ -n "$TEE_MACHINE_REGISTRY_ADDRESS" && "$TEE_MACHINE_REGISTRY_ADDRESS" != "null" ]] \
     || TEE_MACHINE_REGISTRY_ADDRESS="$(addr_of FlareTeeManager)"
 
-for v in FTSO_V2_ADDRESS TEE_EXTENSION_REGISTRY_ADDRESS TEE_MACHINE_REGISTRY_ADDRESS; do
+for v in FTSO_V2_ADDRESS TEE_EXTENSION_REGISTRY_ADDRESS TEE_MACHINE_REGISTRY_ADDRESS FDC_VERIFICATION_ADDRESS; do
     [[ -n "${!v}" && "${!v}" != "null" ]] || die "$v not found in $ADDRESSES"
 done
 
 log "FtsoV2                $FTSO_V2_ADDRESS"
 log "TeeExtensionRegistry  $TEE_EXTENSION_REGISTRY_ADDRESS"
 log "TeeMachineRegistry    $TEE_MACHINE_REGISTRY_ADDRESS"
+log "FdcVerification       $FDC_VERIFICATION_ADDRESS"
 
 send() { cast send --rpc-url "$CHAIN_URL" --private-key "$KEY" "$@"; }
 call() { cast call --rpc-url "$CHAIN_URL" "$@"; }
@@ -87,7 +89,7 @@ if [[ "$STAGE" == "verify" ]]; then
 else
 
 step "Deploying the Aegis contracts"
-export FTSO_V2_ADDRESS TEE_EXTENSION_REGISTRY_ADDRESS TEE_MACHINE_REGISTRY_ADDRESS
+export FTSO_V2_ADDRESS TEE_EXTENSION_REGISTRY_ADDRESS TEE_MACHINE_REGISTRY_ADDRESS FDC_VERIFICATION_ADDRESS
 export RESULT_SUBMITTER_ADDRESS="$OWNER"
 
 DEPLOY_LOG="$PROJECT_DIR/config/aegis-deploy.log"
@@ -100,8 +102,9 @@ POLICY_ENGINE="$(grab POLICY_ENGINE)"
 TREASURY_REGISTRY="$(grab TREASURY_REGISTRY)"
 PAYMENT_CONTROLLER="$(grab PAYMENT_CONTROLLER)"
 AEGIS_SENDER="$(grab AEGIS_INSTRUCTION_SENDER)"
+EXECUTION_VERIFIER="$(grab EXECUTION_VERIFIER)"
 
-for v in POLICY_ENGINE TREASURY_REGISTRY PAYMENT_CONTROLLER AEGIS_SENDER; do
+for v in POLICY_ENGINE TREASURY_REGISTRY PAYMENT_CONTROLLER AEGIS_SENDER EXECUTION_VERIFIER; do
     [[ -n "${!v}" ]] || { cat "$DEPLOY_LOG" >&2; die "could not read $v from the deploy log"; }
     log "$v ${!v}"
 done
@@ -132,6 +135,7 @@ POLICY_ENGINE=$POLICY_ENGINE
 TREASURY_REGISTRY=$TREASURY_REGISTRY
 PAYMENT_CONTROLLER=$PAYMENT_CONTROLLER
 AEGIS_SENDER=$AEGIS_SENDER
+EXECUTION_VERIFIER=$EXECUTION_VERIFIER
 EXT_ID=$EXT_ID
 EOF
 log "wrote config/extension.env and config/aegis-addresses.env"

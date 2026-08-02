@@ -341,6 +341,6 @@ contract AegisInstructionSenderTest is Test {
         vm.prank(approverA);
         controller.approve(requestId);
         vm.prank(proposer);
-        controller.dispatch(requestId, 900_000, 12);
+        controller.dispatch(requestId, 899_990, 900_000, 12);
     }
 }
