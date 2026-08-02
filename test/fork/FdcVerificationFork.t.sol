@@ -30,8 +30,15 @@ import {IPayment} from "../../contracts/interfaces/IPayment.sol";
 /// bytes that return storage slot zero, so the test can put a chosen root
 /// there. That is a root *oracle*, not the verification — the leaf hashing, the
 /// Merkle walk, the attestation-type and source handling all remain Flare's.
-/// Producing a genuinely finalised root would mean getting an attestation into
-/// a voting round, which needs the FDC verifier API key.
+/// The substitution is here because this file drives settlement end to end
+/// through ExecutionVerifier, which needs a response describing *our own*
+/// payment, and getting one of those into a voting round needs the FDC verifier
+/// API key.
+///
+/// For the narrower question — does Flare's verifier accept this encoding
+/// against a root Flare itself finalised — see RealAttestationFork.t.sol. It
+/// pins a real Payment attestation read from public sources and substitutes
+/// nothing at all.
 ///
 /// Skipped unless COSTON2_RPC_URL is set, so the offline suite stays offline.
 ///
