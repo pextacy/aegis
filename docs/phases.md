@@ -17,15 +17,15 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 
 | Phase | Title | Depends on | State |
 |---|---|---|---|
-| 0 | Unblock the critical path | — | `[ ]` |
-| 1 | Policy layer in Solidity | — | `[ ]` |
+| 0 | Unblock the critical path | — | `[~]` one blocker: faucet |
+| 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
 | 2 | XRPL serialiser and signer in Go | — | `[ ]` |
 | 3 | TEE extension | 0, 1, 2 | `[ ]` |
 | 4 | Settlement and proof | 3 | `[ ]` |
 | 5 | Interface and hardening | 4 | `[ ]` |
 | 6 | Multisig and PMW migration | 5 | post-program |
 
-Phases 0, 1 and 2 have no dependency on each other. Start all three on day one. The schedule is determined by P0-1 (indexer credentials), which is a request to a third party with unknown latency — everything in phase 3 onward is blocked behind it.
+Phases 0, 1 and 2 have no dependency on each other. The original plan expected P0-1 (indexer credentials) to set the schedule; running our own indexer removed that, so the only thing outstanding in phase 0 is funding the deployer from a captcha-gated faucet.
 
 ---
 
@@ -44,7 +44,7 @@ Live state and the full environment record are in `phase-0-status.md`.
 - [x] **P0-4 — Public HTTPS tunnel to port 6674.** `./scripts/tunnel.sh` brings one up and writes `EXT_PROXY_URL` into `.env.coston2` and `.env` itself. Backed by cloudflared, which needs no account — the original plan named ngrok, but ngrok requires a signup and the requirement is a tunnel, not a vendor. The tradeoff is real and unchanged: a quick tunnel mints a new URL per run, so a restart after registration means re-running `post-build.sh`. `./scripts/tunnel.sh --ngrok <domain>` uses a reserved ngrok domain instead, which survives restarts; ngrok is installed and that upgrade is a convenience, not a precondition.
 - [x] **P0-5 — Fill the environment.** `.env.coston2` written and activated with `./scripts/use-chain.sh coston2` — that is the scaffold's intended path, not editing `.env` by hand. Carries `LANGUAGE=go`, `CHAIN`, `CHAIN_URL`, `ADDRESSES_FILE`, `INITIAL_OWNER`, `DEPLOYMENT_PRIVATE_KEY`, `PROXY_PRIVATE_KEY`, `LOCAL_MODE=false`, `SIMULATED_TEE=true`, `NORMAL_PROXY_URL`. `EXT_PROXY_URL` stays empty until P0-4. `SIMULATED_TEE=true` must pair with container `MODE=1` — `docker-compose.yaml` defaults to it — or registration fails `code hashes do not match`. Governance vars left unset so `post-build` and the TEE node both fall back to the same deployer/threshold-1 default; setting one side only is what produces `InvalidGovernanceHash`.
 - [x] **P0-6 — Point the proxy at an indexer.** `config/proxy/extension_proxy.coston2.docker.toml` targets the local `indexer-db` service. Verified end to end: proxy boots, syncs, and serves its internal API. Both proxy configs stay gitignored so credentials for the shared indexer never land in git if you switch to it.
-- [~] **P0-7 — Run the scaffold unmodified.** `./scripts/tunnel.sh` → `pre-build.sh` → `start-services.sh --chain coston2` → `post-build.sh` → `test.sh`. `SAY_HELLO` and `SAY_GOODBYE` both complete. The on-chain leg is blocked on P0-1 and P0-2; everything reachable without them passes — version pins consistent, bindings generated, `forge build` clean, the Go extension builds/vets/tests under Go 1.26.4, all three Docker images built, `test-unit.sh` green, `test-conformance.sh` 16/16, pre-flight reaching Coston2 and stopping only on balance, and `ext-proxy` reaching the indexer and being rejected only at authentication. Requires bash 4.4+ — macOS 3.2 breaks the scaffold's own scripts. `./scripts/phase0-check.sh` reports what is still unmet.
+- [~] **P0-7 — Run the scaffold unmodified.** `./scripts/tunnel.sh` → `pre-build.sh` → `start-services.sh --chain coston2` → `post-build.sh` → `test.sh`. `SAY_HELLO` and `SAY_GOODBYE` both complete. The on-chain leg is blocked on P0-2 alone; everything reachable without it passes — version pins consistent, bindings generated, `forge build` clean, the Go extension builds/vets/tests under Go 1.26.4, all three Docker images built, `test-unit.sh` green, `test-conformance.sh` 16/16, pre-flight reaching Coston2 and stopping only on balance, and `ext-proxy` booting against the local indexer, logging `Database in sync`, and serving its internal API while it waits for a registered TEE machine. Requires bash 4.4+ — macOS 3.2 breaks the scaffold's own scripts. `./scripts/phase0-check.sh` reports what is still unmet.
 - [x] **P0-8 — Record the environment.** `phase-0-status.md` — toolchain versions, scaffold pin, dependency pins, chain facts, deployer, ports, and what each blocker needs. Extension id, instruction sender, code hash and tunnel domain are the four values still to fill after P0-7, because a reset means reproducing them exactly.
 
 ### Verification
@@ -75,22 +75,22 @@ Do not run `pre-build.sh --force` casually — it deploys a new sender and regis
 
 ### Tasks
 
-- [ ] **P1-1 — `PolicyEngine.sol`: policy storage.** `Tier` and `Policy` structs, `createPolicy`, immutable versions. Tiers ascending by `maxAmountUsd`; the last tier is the hard per-payment cap. Reject unsorted or empty tier arrays at creation.
-- [ ] **P1-2 — `PolicyEngine.sol`: tier resolution.** `resolveTier` returns the lowest tier whose ceiling covers the amount, reverts `AmountExceedsPolicyCap` when none does.
-- [ ] **P1-3 — `PolicyEngine.sol`: allowlist.** `setAllowlist` / `isDestinationAllowed` over the pair (AccountID, destination tag). Tag `0` means any tag is permitted for that account.
-- [ ] **P1-4 — `PolicyEngine.sol`: roles.** Bitmask per policy — `PROPOSER = 1`, `APPROVER = 2`, `GUARDIAN = 4`, `POLICY_ADMIN = 8`. One address may hold several.
-- [ ] **P1-5 — `TreasuryRegistry.sol`: lifecycle.** `createTreasury`, the `Treasury` struct, `TreasuryCreated`. The XRPL account does not exist yet at this point.
-- [ ] **P1-6 — `TreasuryRegistry.sol`: freeze.** `setFrozen`, guardian-only, single transaction, no threshold. Unfreeze requires the policy's amendment threshold.
-- [ ] **P1-7 — `TreasuryRegistry.sol`: sequence tracking.** `nextSequence`, `advanceSequence` restricted to `ExecutionVerifier`.
-- [ ] **P1-8 — `TreasuryRegistry.sol`: `bindXrplAccount` signature.** Written, access-restricted to `AegisInstructionSender`, not yet reachable — wiring is P3-9.
-- [ ] **P1-9 — FTSO integration.** Derived feed id `bytes21(abi.encodePacked(uint8(1), bytes7("XRP/USD"), bytes13(0)))`, `MAX_PRICE_AGE = 180`, conversion `amountUsd18 = amountDrops * value * 10^(12 - decimals)`. Never cache a price across transactions.
-- [ ] **P1-10 — `PaymentController.sol`: `propose`.** Convert to USD, check allowlist, resolve tier, check rolling window, store with `eligibleAt = block.timestamp + tier.timelockSeconds`. Revert on the first violation with a specific custom error, so no one ever approves a request that cannot execute.
-- [ ] **P1-11 — `PaymentController.sol`: `approve`.** Reject the proposer of that request. Reject a duplicate from the same address. Transition to `Approved` when `approvals >= tier.requiredApprovals`.
-- [ ] **P1-12 — `PaymentController.sol`: rolling window.** Ring buffer of `(timestamp, amountUsd)` per treasury, pruned lazily on `propose` and `dispatch`. Spend is committed at dispatch, not at proposal, and released when a request ends `Failed`.
-- [ ] **P1-13 — `PaymentController.sol`: `dispatch` guard.** Requires `Approved`, `block.timestamp >= eligibleAt`, treasury not frozen — then **re-runs the entire policy check**. The instruction-send call itself is P3-1.
-- [ ] **P1-14 — Policy digest.** `keccak256(abi.encode(requestId, treasuryId, destinationAccountId, destinationTag, amountDrops, sequence, lastLedgerSequence, feeDrops))`, computed in `dispatch` and stored on the request.
-- [ ] **P1-15 — Policy amendment path.** Repointing a treasury to a new `policyId` requires the current policy's `amendApprovals` and `amendTimelock`.
-- [ ] **P1-16 — Test suite.** One passing and one failing test per rule. A rule with only a happy path is untested.
+- [x] **P1-1 — `PolicyEngine.sol`: policy storage.** `Tier` and `Policy` structs, `createPolicy`, immutable versions. Tiers ascending by `maxAmountUsd`; the last tier is the hard per-payment cap. Reject unsorted or empty tier arrays at creation.
+- [x] **P1-2 — `PolicyEngine.sol`: tier resolution.** `resolveTier` returns the lowest tier whose ceiling covers the amount, reverts `AmountExceedsPolicyCap` when none does.
+- [x] **P1-3 — `PolicyEngine.sol`: allowlist.** `setAllowlist` / `isDestinationAllowed` over the pair (AccountID, destination tag). Tag `0` means any tag is permitted for that account.
+- [x] **P1-4 — `PolicyEngine.sol`: roles.** Bitmask per policy — `PROPOSER = 1`, `APPROVER = 2`, `GUARDIAN = 4`, `POLICY_ADMIN = 8`. One address may hold several.
+- [x] **P1-5 — `TreasuryRegistry.sol`: lifecycle.** `createTreasury`, the `Treasury` struct, `TreasuryCreated`. The XRPL account does not exist yet at this point.
+- [x] **P1-6 — `TreasuryRegistry.sol`: freeze.** `setFrozen`, guardian-only, single transaction, no threshold. Unfreeze requires the policy's amendment threshold.
+- [x] **P1-7 — `TreasuryRegistry.sol`: sequence tracking.** `nextSequence`, `advanceSequence` restricted to `ExecutionVerifier`.
+- [x] **P1-8 — `TreasuryRegistry.sol`: `bindXrplAccount` signature.** Written, access-restricted to `AegisInstructionSender`, not yet reachable — wiring is P3-9.
+- [x] **P1-9 — FTSO integration.** Derived feed id `bytes21(abi.encodePacked(uint8(1), bytes7("XRP/USD"), bytes13(0)))`, `MAX_PRICE_AGE = 180`, conversion `amountUsd18 = amountDrops * value * 10^(12 - decimals)`. Never cache a price across transactions.
+- [x] **P1-10 — `PaymentController.sol`: `propose`.** Convert to USD, check allowlist, resolve tier, check rolling window, store with `eligibleAt = block.timestamp + tier.timelockSeconds`. Revert on the first violation with a specific custom error, so no one ever approves a request that cannot execute.
+- [x] **P1-11 — `PaymentController.sol`: `approve`.** Reject the proposer of that request. Reject a duplicate from the same address. Transition to `Approved` when `approvals >= tier.requiredApprovals`.
+- [x] **P1-12 — `PaymentController.sol`: rolling window.** Ring buffer of `(timestamp, amountUsd)` per treasury, pruned lazily on `propose` and `dispatch`. Spend is committed at dispatch, not at proposal, and released when a request ends `Failed`.
+- [x] **P1-13 — `PaymentController.sol`: `dispatch` guard.** Requires `Approved`, `block.timestamp >= eligibleAt`, treasury not frozen — then **re-runs the entire policy check**. The instruction-send call itself is P3-1.
+- [x] **P1-14 — Policy digest.** `keccak256(abi.encode(requestId, treasuryId, destinationAccountId, destinationTag, amountDrops, sequence, lastLedgerSequence, feeDrops))`, computed in `dispatch` and stored on the request.
+- [x] **P1-15 — Policy amendment path.** Repointing a treasury to a new `policyId` requires the current policy's `amendApprovals` and `amendTimelock`.
+- [x] **P1-16 — Test suite.** One passing and one failing test per rule. A rule with only a happy path is untested.
 
 ### Verification
 
