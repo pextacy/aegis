@@ -131,7 +131,13 @@ if want submitter; then
     step "Submitter"
     if [[ -d submitter/node_modules ]]; then
         run "typecheck" npm --prefix submitter run typecheck
+        # The suite includes a live check of the voting-round arithmetic against
+        # Coston2, which skips itself without COSTON2_RPC_URL. It is reads only,
+        # so it needs no funded wallet.
         run "test" npm --prefix submitter test
+        if [[ -z "${COSTON2_RPC_URL:-}" ]]; then
+            skip "submitter live checks — set COSTON2_RPC_URL to run them against real Coston2"
+        fi
         run "build" npm --prefix submitter run build
     else
         skip "submitter/node_modules missing — npm --prefix submitter ci"
