@@ -20,7 +20,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 | 0 | Unblock the critical path | — | `[~]` one blocker: faucet |
 | 1 | Policy layer in Solidity | — | `[x]` 88 tests passing |
 | 2 | XRPL serialiser and signer in Go | — | `[x]` verified against a real XRPL blob |
-| 3 | TEE extension | 0, 1, 2 | `[~]` code and off-chain tests done; on-chain leg needs the faucet |
+| 3 | TEE extension | 0, 1, 2 | `[~]` full cycle proven on a local chain; Coston2 run needs the faucet |
 | 4 | Settlement and proof | 3 | `[ ]` |
 | 5 | Interface and hardening | 4 | `[ ]` |
 | 6 | Multisig and PMW migration | 5 | post-program |
@@ -176,6 +176,7 @@ No XRPL library. The enclave image is the unit of attestation and must stay smal
 - [x] **P3-10 — `processStatus`.** Returns `(bool hasKey, uint32 lastSignedSequence)`. Nothing else.
 - [x] **P3-11 — `GET /state`.** Booleans and sequence numbers only. If a struct field holding a key is reachable from a response type, that is the bug.
 - [x] **P3-12 — `recordSignature` path.** `PaymentController.recordSignature`, restricted to `AegisInstructionSender`, moves the request to `Signed` and emits `PaymentSigned(requestId, signedBlob, txHash)` — the event the submitter watches in phase 4.
+- [x] **P3-15 — Prove the cycle on a live chain.** `./scripts/local-integration.sh` runs the whole thing against a local chain and the real enclave process: deploy, policy, treasury, KEYGEN, bind, propose, approve, dispatch, SIGNTX, record, then tamper. Real transactions, real contracts, a real XRPL signature. The only piece not covered is Flare's instruction relay, which needs Coston2 and a funded deployer — and the relay is exactly what the policy digest defends against, which the tamper step proves. Two real defects came out of running it that no unit test had caught: `go run` leaves the server alive as a grandchild, so a second run met an enclave that already held the treasury's key; and a right-aligned AccountID passed every on-chain check and was only refused at signing, after approvals had been collected. The second is fixed in `propose`.
 - [x] **P3-13 — Tamper test.** Take a real payload, alter one field, confirm status `0` and no signature. Constructing a fake payload does not test the same thing.
 - [x] **P3-14 — Keep the generated artefacts in step.** The scaffold's Hello World bindings and its `tools/` deploy CLI are untouched, so `generate-bindings.sh` still does what it did; Aegis deploys through `script/DeployAegis.s.sol` instead, which needs no bindings. What did need regenerating is `testdata/conformance` — the scaffold's fixtures describe an extension that no longer exists. `AEGIS_GEN_FIXTURES=1 go test ./internal/extension -run GenerateConformance` rewrites them, and `test-conformance.sh` passes 16/16 against the Aegis wire contract.
 

@@ -7,6 +7,7 @@ import {AegisFixture} from "./helpers/AegisFixture.sol";
 
 /// @notice The payment state machine and every rule that can refuse a payment.
 contract PaymentControllerTest is AegisFixture {
+    uint32 constant FLS = 899_990;
     uint32 constant LLS = 900_000;
     uint64 constant FEE = 12;
 
@@ -46,7 +47,7 @@ contract PaymentControllerTest is AegisFixture {
             )
         );
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     // --- proposal ---------------------------------------------------------
@@ -71,6 +72,26 @@ contract PaymentControllerTest is AegisFixture {
         vm.expectRevert(PaymentController.ZeroAmount.selector);
         vm.prank(proposer);
         controller.propose(treasuryId, DEST, 0, 0);
+    }
+
+    /// @dev Found by running the real enclave against a real chain: a
+    /// right-aligned AccountID passed every on-chain check and was then refused
+    /// at signing, after approvals had already been collected. The contract now
+    /// refuses it where every other policy violation is refused — at proposal.
+    function test_rightAlignedDestinationIsRejectedAtProposal() public {
+        bytes32 rightAligned = bytes32(uint256(uint160(0xaEd2aCa19C6F54926F8482648A694E7cb62baA22)));
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.DestinationNotLeftAligned.selector, rightAligned));
+        vm.prank(proposer);
+        controller.propose(treasuryId, rightAligned, 0, 1_000_000);
+    }
+
+    function test_leftAlignedDestinationIsAccepted() public {
+        bytes32 leftAligned = bytes32(bytes20(hex"AED2ACA19C6F54926F8482648A694E7CB62BAA22"));
+
+        vm.prank(proposer);
+        uint256 id = controller.propose(treasuryId, leftAligned, 0, 1_000_000);
+        assertEq(controller.getRequest(id).destinationAccountId, leftAligned);
     }
 
     function test_zeroDestinationRejected() public {
@@ -141,7 +162,7 @@ contract PaymentControllerTest is AegisFixture {
             abi.encodeWithSelector(PaymentController.TimelockNotElapsed.selector, r.eligibleAt, uint64(block.timestamp))
         );
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     function test_dispatchAfterTimelockSucceeds() public {
@@ -150,7 +171,7 @@ contract PaymentControllerTest is AegisFixture {
         setPrice(XRP_PRICE, uint64(block.timestamp));
 
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
 
         assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Dispatched));
         assertEq(sender.calls(), 1, "instruction reached the sender");
@@ -161,7 +182,7 @@ contract PaymentControllerTest is AegisFixture {
         uint256 id = proposeAndApprove(drops, 1);
 
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
 
         PaymentController.PaymentRequest memory r = controller.getRequest(id);
         bytes32 expected = controller.policyDigest(id, treasuryId, DEST, 0, drops, r.sequence, LLS, FEE);
@@ -175,14 +196,44 @@ contract PaymentControllerTest is AegisFixture {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.expectRevert(PaymentController.LastLedgerSequenceRequired.selector);
         vm.prank(proposer);
-        controller.dispatch(id, 0, FEE);
+        controller.dispatch(id, FLS, 0, FEE);
     }
 
     function test_dispatchRequiresFee() public {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.expectRevert(PaymentController.ZeroFee.selector);
         vm.prank(proposer);
-        controller.dispatch(id, LLS, 0);
+        controller.dispatch(id, FLS, LLS, 0);
+    }
+
+    function test_dispatchRequiresFirstLedgerSequence() public {
+        uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
+        vm.expectRevert(PaymentController.FirstLedgerSequenceRequired.selector);
+        vm.prank(proposer);
+        controller.dispatch(id, 0, LLS, FEE);
+    }
+
+    function test_dispatchRejectsInvertedLedgerRange() public {
+        uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.LedgerRangeInverted.selector, LLS + 1, LLS));
+        vm.prank(proposer);
+        controller.dispatch(id, LLS + 1, LLS, FEE);
+    }
+
+    function test_dispatchAcceptsSingleLedgerRange() public {
+        uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
+        vm.prank(proposer);
+        controller.dispatch(id, LLS, LLS, FEE);
+        assertEq(controller.getRequest(id).firstLedgerSequence, LLS);
+    }
+
+    function test_dispatchStoresLedgerRange() public {
+        uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+        PaymentController.PaymentRequest memory r = controller.getRequest(id);
+        assertEq(r.firstLedgerSequence, FLS, "lower bound for the non-existence proof");
+        assertEq(r.lastLedgerSequence, LLS);
     }
 
     function test_dispatchRequiresApprovedState() public {
@@ -196,13 +247,13 @@ contract PaymentControllerTest is AegisFixture {
             )
         );
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     function test_dispatchUsesTreasurySequence() public {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
         assertEq(controller.getRequest(id).sequence, 1, "first payment uses sequence 1");
     }
 
@@ -217,7 +268,7 @@ contract PaymentControllerTest is AegisFixture {
         // XRP doubles. The same drops are now worth 3,800 USD — still tier 1.
         setPrice(XRP_PRICE * 2, uint64(block.timestamp));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
         assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Dispatched));
     }
 
@@ -232,7 +283,7 @@ contract PaymentControllerTest is AegisFixture {
         setPrice(XRP_PRICE * 2, uint64(block.timestamp));
         vm.expectRevert(abi.encodeWithSelector(PaymentController.InsufficientApprovals.selector, 2, 3));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     function test_priceRiseAboveCapBlocksDispatch() public {
@@ -247,7 +298,7 @@ contract PaymentControllerTest is AegisFixture {
         setPrice(XRP_PRICE * 3, uint64(block.timestamp));
         vm.expectRevert(abi.encodeWithSelector(PolicyEngine.AmountExceedsPolicyCap.selector, 120_000e18, TIER2_CAP));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     // --- rolling window ---------------------------------------------------
@@ -258,7 +309,7 @@ contract PaymentControllerTest is AegisFixture {
         vm.warp(block.timestamp + 24 hours);
         setPrice(XRP_PRICE, uint64(block.timestamp));
         vm.prank(proposer);
-        controller.dispatch(first, LLS, FEE);
+        controller.dispatch(first, FLS, LLS, FEE);
 
         assertEq(controller.committedUsd(treasuryId), 30_000e18);
 
@@ -294,14 +345,14 @@ contract PaymentControllerTest is AegisFixture {
         setPrice(XRP_PRICE, uint64(block.timestamp));
 
         vm.prank(proposer);
-        controller.dispatch(a, LLS, FEE);
+        controller.dispatch(a, FLS, LLS, FEE);
 
         // 30,000 is committed; 25,000 no longer fits under the 50,000 ceiling.
         vm.expectRevert(
             abi.encodeWithSelector(PaymentController.RollingWindowExceeded.selector, 30_000e18, 25_000e18, WINDOW_CAP)
         );
         vm.prank(proposer);
-        controller.dispatch(b, LLS, FEE);
+        controller.dispatch(b, FLS, LLS, FEE);
     }
 
     function test_windowReleasesAfterTheWindowPasses() public {
@@ -309,7 +360,7 @@ contract PaymentControllerTest is AegisFixture {
         vm.warp(block.timestamp + 24 hours);
         setPrice(XRP_PRICE, uint64(block.timestamp));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
         assertEq(controller.committedUsd(treasuryId), 30_000e18);
 
         vm.warp(block.timestamp + WINDOW_SECONDS + 1);
@@ -321,7 +372,7 @@ contract PaymentControllerTest is AegisFixture {
         vm.warp(block.timestamp + 24 hours);
         setPrice(XRP_PRICE, uint64(block.timestamp));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
         assertEq(controller.committedUsd(treasuryId), 30_000e18);
 
         // The fixture wires this test contract as the execution verifier.
@@ -384,7 +435,7 @@ contract PaymentControllerTest is AegisFixture {
 
         vm.expectRevert(abi.encodeWithSelector(PaymentController.TreasuryIsFrozen.selector, treasuryId));
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     // --- authority --------------------------------------------------------
@@ -392,7 +443,7 @@ contract PaymentControllerTest is AegisFixture {
     function test_onlyInstructionSenderRecordsSignature() public {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
 
         vm.expectRevert(PaymentController.NotInstructionSender.selector);
         vm.prank(outsider);
@@ -402,7 +453,7 @@ contract PaymentControllerTest is AegisFixture {
     function test_onlyExecutionVerifierMarksSettled() public {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
 
         vm.expectRevert(PaymentController.NotExecutionVerifier.selector);
         vm.prank(outsider);
@@ -412,7 +463,7 @@ contract PaymentControllerTest is AegisFixture {
     function test_settlementRequiresASignatureFirst() public {
         uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -437,7 +488,7 @@ contract PaymentControllerTest is AegisFixture {
             )
         );
         vm.prank(proposer);
-        controller.dispatch(id, LLS, FEE);
+        controller.dispatch(id, FLS, LLS, FEE);
     }
 
     function _enforcedTreasury() private returns (uint256 pid, uint256 tid) {

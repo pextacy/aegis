@@ -137,6 +137,7 @@ contract PaymentController {
     error XrplAccountNotBound(uint256 treasuryId);
     error ZeroAmount();
     error ZeroDestination();
+    error DestinationNotLeftAligned(bytes32 accountId);
     error LastLedgerSequenceRequired();
     error FirstLedgerSequenceRequired();
     error LedgerRangeInverted(uint32 firstLedgerSequence, uint32 lastLedgerSequence);
@@ -198,6 +199,11 @@ contract PaymentController {
     {
         if (amountDrops == 0) revert ZeroAmount();
         if (destAccountId == bytes32(0)) revert ZeroDestination();
+        // A 20-byte AccountID is left-aligned in bytes32, which is how Solidity
+        // carries it. A right-aligned value passes every check in this contract
+        // and is then unsignable — the enclave refuses it as not an AccountID —
+        // so it is caught here rather than after approvals have been collected.
+        if (uint256(destAccountId) & type(uint96).max != 0) revert DestinationNotLeftAligned(destAccountId);
 
         TreasuryRegistry.Treasury memory t = TREASURY_REGISTRY.getTreasury(treasuryId);
         if (t.frozen) revert TreasuryIsFrozen(treasuryId);
@@ -342,6 +348,7 @@ contract PaymentController {
         );
 
         r.sequence = sequence;
+        r.firstLedgerSequence = firstLedgerSequence;
         r.lastLedgerSequence = lastLedgerSequence;
         r.feeDrops = feeDrops;
         r.policyDigest = digest;
@@ -353,7 +360,7 @@ contract PaymentController {
         // forge-lint: disable-next-line(unsafe-typecast)
         _window[r.treasuryId].push(WindowEntry({timestamp: uint64(block.timestamp), amountUsd: uint192(amountUsd)}));
 
-        emit PaymentDispatched(requestId, sequence, lastLedgerSequence, feeDrops, digest);
+        emit PaymentDispatched(requestId, sequence, firstLedgerSequence, lastLedgerSequence, feeDrops, digest);
 
         instructionSender.requestSignature{value: msg.value}(
             IAegisInstructionSender.SignRequest({
