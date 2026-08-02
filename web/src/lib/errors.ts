@@ -283,6 +283,14 @@ const EXPLANATIONS: Record<string, Explainer> = {
     rule: "PaymentController — destination encoding",
     detail: `${shortHex(stringAt(args, 0))} has bytes set below the first 20, so it is not an AccountID left-aligned in a word. A right-aligned value would serialise to a different XRPL account than the one intended.`,
   }),
+  WindowEntryMismatch: (args) => ({
+    title: "Rolling-window accounting is inconsistent",
+    rule: "PaymentController — window release",
+    detail:
+      `Request ${bigintAt(args, 1)} recorded its window spend for treasury ${bigintAt(args, 0)} at entry ` +
+      `${bigintAt(args, 2)}, and that entry no longer holds it. This is an invariant failure rather than a rule ` +
+      `refusing a payment. The contract stops instead of reporting a release that did not happen.`,
+  }),
   SequenceNotInitialised: (args) => ({
     title: "Treasury has no starting sequence yet",
     rule: "PaymentController — starting sequence",

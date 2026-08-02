@@ -25,6 +25,7 @@ export const paymentControllerAbi = [
   {"type":"error","name":"StalePrice","inputs":[{"name":"feedTimestamp","type":"uint64","internalType":"uint64"},{"name":"nowTime","type":"uint64","internalType":"uint64"}]},
   {"type":"error","name":"TimelockNotElapsed","inputs":[{"name":"eligibleAt","type":"uint64","internalType":"uint64"},{"name":"nowTime","type":"uint64","internalType":"uint64"}]},
   {"type":"error","name":"TreasuryIsFrozen","inputs":[{"name":"treasuryId","type":"uint256","internalType":"uint256"}]},
+  {"type":"error","name":"WindowEntryMismatch","inputs":[{"name":"treasuryId","type":"uint256","internalType":"uint256"},{"name":"requestId","type":"uint256","internalType":"uint256"},{"name":"windowIndex","type":"uint256","internalType":"uint256"}]},
   {"type":"error","name":"WrongState","inputs":[{"name":"have","type":"uint8","internalType":"enum PaymentController.RequestState"},{"name":"want","type":"uint8","internalType":"enum PaymentController.RequestState"}]},
   {"type":"error","name":"XrplAccountNotBound","inputs":[{"name":"treasuryId","type":"uint256","internalType":"uint256"}]},
   {"type":"error","name":"ZeroAddress","inputs":[]},

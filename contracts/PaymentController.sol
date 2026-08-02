@@ -139,6 +139,12 @@ contract PaymentController {
     error ZeroDestination();
     error DestinationNotLeftAligned(bytes32 accountId);
 
+    /// @notice A request's rolling-window entry is not where it was recorded.
+    /// @dev An invariant assertion. Reachable only through storage corruption,
+    /// and loud rather than silent because the alternative is a release that is
+    /// reported but did not happen.
+    error WindowEntryMismatch(uint256 treasuryId, uint256 requestId, uint256 windowIndex);
+
     /// @notice The treasury's XRPL starting sequence has not been recorded yet.
     /// @dev Signing against a guessed sequence produces a transaction XRPL
     /// rejects and can never prove, so this refuses instead.
@@ -590,14 +596,25 @@ contract PaymentController {
         }
     }
 
+    /// @dev The entry a request committed is the one it pushed at dispatch, so
+    /// the lookup below cannot miss: `windowIndex` was the array length at that
+    /// moment, entries are never removed (pruning advances a head index), and
+    /// the narrowing is lossless because `amountUsd` fits under a uint128 cap.
+    ///
+    /// It is asserted rather than assumed because the alternative is the worst
+    /// shape a bug here could take: emitting WindowSpendReleased and clearing
+    /// the request while the treasury's committed spend silently stays consumed,
+    /// which reads in every log and on every screen as a release that happened.
+    /// Reverting keeps the failure visible and the accounting honest.
     function _releaseWindow(uint256 requestId, PaymentRequest storage r) private {
         uint256 amount = r.committedUsd;
         if (amount == 0) return;
         WindowEntry[] storage entries = _window[r.treasuryId];
         uint256 idx = r.windowIndex;
-        if (idx < entries.length && entries[idx].amountUsd == uint192(amount)) {
-            entries[idx].amountUsd = 0;
+        if (idx >= entries.length || entries[idx].amountUsd != uint192(amount)) {
+            revert WindowEntryMismatch(r.treasuryId, requestId, idx);
         }
+        entries[idx].amountUsd = 0;
         r.committedUsd = 0;
         emit WindowSpendReleased(r.treasuryId, requestId, amount);
     }
