@@ -2,8 +2,8 @@
 pragma solidity ^0.8.27;
 
 // TODO: Replace local interfaces with imports from flare-smart-contracts-v2 once published as a package.
-import { ITeeExtensionRegistry } from "./interfaces/ITeeExtensionRegistry.sol";
-import { ITeeMachineRegistry } from "./interfaces/ITeeMachineRegistry.sol";
+import {ITeeExtensionRegistry} from "./interfaces/ITeeExtensionRegistry.sol";
+import {ITeeMachineRegistry} from "./interfaces/ITeeMachineRegistry.sol";
 
 /// @title HelloWorldInstructionSender
 /// @author Flare Foundation
@@ -43,10 +43,7 @@ contract HelloWorldInstructionSender {
     /// @notice Initializes the contract with registry addresses.
     /// @param _teeExtensionRegistry Address of the TEE extension registry.
     /// @param _teeMachineRegistry Address of the TEE machine registry.
-    constructor(
-        ITeeExtensionRegistry _teeExtensionRegistry,
-        ITeeMachineRegistry _teeMachineRegistry
-    ) {
+    constructor(ITeeExtensionRegistry _teeExtensionRegistry, ITeeMachineRegistry _teeMachineRegistry) {
         require(address(_teeExtensionRegistry) != address(0), "TeeExtensionRegistry cannot be zero address");
         require(address(_teeMachineRegistry) != address(0), "TeeMachineRegistry cannot be zero address");
         require(address(_teeExtensionRegistry).code.length > 0, "TeeExtensionRegistry has no code");
@@ -85,11 +82,7 @@ contract HelloWorldInstructionSender {
             claimBackAddress: msg.sender
         });
 
-
-        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
-            teeIds,
-            params
-        );
+        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
     }
 
     /// @notice Sends a SAY_GOODBYE instruction to the TEE.
@@ -108,10 +101,7 @@ contract HelloWorldInstructionSender {
             claimBackAddress: msg.sender
         });
 
-        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
-            teeIds,
-            params
-        );
+        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
     }
 
     /// @notice Returns the cached extension ID, reverting if not yet set.
