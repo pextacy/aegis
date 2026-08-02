@@ -22,11 +22,35 @@ cd "$PROJECT_DIR" || exit 1
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
+# --strict turns a missing toolchain into a failure instead of a skip.
+#
+# Locally a skip is the right behaviour: someone iterating on contracts should
+# not be blocked because they have no Go installed. In CI it is the wrong
+# behaviour and dangerously so — a green run that silently omitted the whole
+# dashboard reports the same exit code as one that tested it. CI passes
+# --strict, so a forgotten `npm ci` fails loudly rather than quietly narrowing
+# what "all checks passed" means.
+STRICT=false
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --strict) STRICT=true ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+
 FAILURES=()
 step()  { echo -e "\n${CYAN}=== $* ===${NC}"; }
 pass()  { echo -e "${GREEN}  ok${NC}    $*"; }
 fail()  { echo -e "${RED}  FAIL${NC}  $*"; FAILURES+=("$1"); }
-skip()  { echo -e "${YELLOW}  skip${NC}  $*"; }
+skip()  {
+    if [[ "$STRICT" == "true" ]]; then
+        fail "$1 (skipped under --strict)"
+    else
+        echo -e "${YELLOW}  skip${NC}  $*"
+    fi
+}
 
 if (( ${BASH_VERSINFO[0]} < 4 || (${BASH_VERSINFO[0]} == 4 && ${BASH_VERSINFO[1]} < 4) )); then
     echo -e "${RED}bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} is too old — use bash 4.4+${NC}" >&2

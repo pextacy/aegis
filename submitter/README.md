@@ -50,6 +50,37 @@ Every variable is required and none has a default that could stand in for a real
 value — see the submitter block in `.env.example`. A missing one stops the
 process at startup rather than producing a submitter pointed at the wrong chain.
 
+## Running it as a container
+
+```bash
+docker build -f submitter/Dockerfile -t aegis-submitter submitter/
+
+docker run --rm \
+  --env-file ../.env \
+  --env-file ../config/aegis-addresses.env \
+  -v aegis-submitter-cursor:/var/lib/aegis-submitter \
+  -v "$PWD/../config/coston2/deployed-addresses.json:/app/addresses.json:ro" \
+  -e ADDRESSES_FILE=/app/addresses.json \
+  -e SUBMITTER_CURSOR_FILE=/var/lib/aegis-submitter/cursor.json \
+  aegis-submitter
+```
+
+The image runs as `node`, not root, and sets no configuration defaults — start
+it with nothing and it exits 1 with the name of the first variable it wanted.
+That is the same fail-closed rule the rest of the system follows: a submitter
+that guessed a chain id would be worse than one that refused to start.
+
+The cursor is the only state worth persisting, hence the volume. Losing it
+costs a re-scan from `SUBMITTER_START_BLOCK`, not correctness — every entry
+point is idempotent against a request that already reached a terminal state.
+
+Unlike the extension image this one is not the unit of attestation: its hash is
+never registered on-chain and no signing policy depends on it, so the
+reproducibility guarantees in `REPRODUCIBILITY.md` do not apply. The base image
+is still pinned by digest, and npm is pinned to the version that wrote
+`package-lock.json`, because Node 22 bundles npm 10 and npm 10 rejects a v3
+lockfile written by npm 11 outright.
+
 ## Tests
 
 ```bash

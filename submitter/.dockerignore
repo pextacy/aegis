@@ -1,0 +1,19 @@
+# The Dockerfile copies package.json, package-lock.json, tsconfig.json and src/
+# explicitly, so this list is defence in depth rather than the mechanism. What
+# matters most is node_modules: leaving it in the context would ship one
+# machine's resolved tree instead of the one npm ci reproduces from the
+# lockfile, and would quietly defeat the --omit=dev stage.
+node_modules
+dist
+
+# Never let a real key reach a build context.
+.env
+.env.*
+!.env.example
+
+test
+vitest.config.ts
+tsconfig.test.json
+README.md
+Dockerfile
+.dockerignore

@@ -1,0 +1,92 @@
+# ./scripts/check.sh, on every push and pull request.
+#
+# Everything here runs without a chain, a tunnel, indexer credentials or a
+# funded wallet. That is deliberate: the on-chain paths live in
+# scripts/local-integration.sh and scripts/aegis-e2e.sh, and a CI job that
+# needed C2FLR would be a CI job that goes red when a faucet is empty.
+#
+# --strict is the important flag. check.sh skips a section whose toolchain is
+# absent, which is right on a laptop and wrong here — without it a forgotten
+# `npm ci` would produce a green run that never tested the dashboard, reporting
+# the same exit code as one that did.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: contracts, extension, submitter, dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # go/go.mod is the single source of truth for the Go version; reading it
+      # here means a toolchain bump cannot land with CI still on the old one.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            submitter/package-lock.json
+            web/package-lock.json
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # Node 22 bundles npm 10, and both lockfiles are v3 written by npm 11. npm 10
+      # reads the way npm 11 records an optional peer as "out of sync" and
+      # refuses to install, so an unpinned runner fails at `npm ci` for reasons
+      # that have nothing to do with the change under test. submitter/Dockerfile
+      # pins the same version for the same reason.
+      - name: Pin npm
+        run: npm install -g npm@11.6.2
+
+      # check.sh treats a missing node_modules as a skipped section, and
+      # --strict turns that into a failure. Installing both up front is what
+      # makes the strict run meaningful rather than merely loud.
+      - name: Install Node dependencies
+        run: |
+          npm --prefix submitter ci
+          npm --prefix web ci
+
+      # forge build must precede the submitter tests: test/abi.test.ts reads the
+      # compiled ABIs out of out/ rather than a hand-maintained copy, so that a
+      # field reordered in Solidity fails here instead of surfacing later as a
+      # proof that will not verify on-chain. check.sh builds first anyway; this
+      # states the ordering rather than relying on it.
+      - name: Build contracts
+        run: forge build
+
+      - name: check.sh --strict
+        run: ./scripts/check.sh --strict
+
+      # Advisory data changes without the repository changing, so this is its
+      # own step: a new critical in a dependency should turn CI red on the next
+      # run, not wait for someone to touch package.json. Moderate findings are
+      # allowed through — the ones outstanding are in the wallet connector
+      # chain and need a semver-major wagmi migration, recorded in
+      # docs/phases.md rather than silently absorbed.
+      - name: Dependency advisories
+        run: |
+          npm --prefix submitter audit --audit-level=high
+          npm --prefix web audit --audit-level=high
