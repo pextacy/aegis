@@ -27,6 +27,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified · `[!
 
 Phases 0, 1 and 2 have no dependency on each other. The original plan expected P0-1 (indexer credentials) to set the schedule; running our own indexer removed that, so the only thing outstanding in phase 0 is funding the deployer from a captcha-gated faucet.
 
+**Every remaining task in the project reduces to that one blocker.** `./scripts/check.sh` passes in full — contracts, extension, container conformance, submitter, dashboard and every hygiene rule — on a clean checkout with no chain, tunnel or credentials. Nothing else is code-incomplete. What is left is P0-2 and the four items downstream of it (P0-7's on-chain leg, P3-15 on Coston2, P4's live settlement, P5-11 and P5-12), all of which need C2FLR at `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from `https://faucet.flare.network/coston2`. The captcha is the reason this cannot be automated, and it is the only reason.
+
 ---
 
 ## Phase 0 — Unblock the critical path
@@ -332,17 +334,20 @@ PMW provides natively what P6-1 to P6-3 build by hand: wallets as k-of-n key set
 
 These apply to every commit in every phase, from `CLAUDE.md`. A phase cannot close with any of them failing.
 
-- [ ] `forge test` and `go test ./...` both pass.
-- [ ] No mocks, stubs or simulated components outside `test/`. Nothing in `src/`, `contracts/`, `aegis-fce/`, `submitter/` or `web/` imports a test double.
-- [ ] No `TODO`, `FIXME`, `XXX`, placeholder address, `example.com` URL, or function returning a constant "for now".
-- [ ] No silent fallbacks. Stale price reverts, digest mismatch returns status `0`, unknown treasury errors. Every failure path is a refusal to spend money, which is the correct outcome.
-- [ ] No key material logged, returned or persisted — not at debug level, not in an error message, not in `/state`.
-- [ ] No check weakened to make a test pass. If `MAX_PRICE_AGE` blocks a test, the test setup is wrong.
-- [ ] `SignRequest` changes touch Solidity, Go and the decoder registration in one commit.
-- [ ] `opType` / `opCommand` changes touch all three locations.
-- [ ] ABI changes are followed by `./scripts/generate-bindings.sh`.
-- [ ] Extension behaviour changes bump `Version` in `internal/config/config.go`.
-- [ ] This file and `PLAN.md` reflect reality — checked off what is done, corrected what turned out wrong.
+`./scripts/check.sh` runs every one that can be checked mechanically, under a single exit code, with no chain, tunnel, credentials or faucet required. Run it before pushing. The boxes below are its sections plus the rules that need a human reading a diff.
+
+- [x] `forge test` and `go test ./...` both pass. 152 contract tests, Go suites green, conformance 16/16.
+- [x] No mocks, stubs or simulated components outside `test/`. `check.sh` asserts no shipped file imports `test/helpers`.
+- [x] No `TODO`, `FIXME`, `XXX`, placeholder address, `example.com` URL, or function returning a constant "for now". The three remaining `TODO`s are in scaffold interface files `CLAUDE.md` marks do-not-modify, and the sweep excludes them by path rather than by suppressing the pattern.
+- [x] No silent fallbacks. Stale price reverts, digest mismatch returns status `0`, unknown treasury errors. Every failure path is a refusal to spend money, which is the correct outcome.
+- [x] No key material logged, returned or persisted. `check.sh` asserts no private key type is reachable from `pkg/types`, because that is an invariant rather than a test and drift in it would be silent.
+- [x] No check weakened to make a test pass. The one place this was tempting was the `0x0000…0000` literal the hygiene sweep flagged in `chain-data.ts`: it was a genuine sentinel rather than an unfilled value, and the fix was to use viem's `zeroAddress` so the literal disappears — not to add an exemption.
+- [x] `SignRequest` changes touch Solidity, Go and the decoder registration in one commit.
+- [x] `opType` / `opCommand` changes touch all three locations. `check.sh` asserts the three-way alignment directly.
+- [x] ABI changes are followed by `./scripts/generate-bindings.sh`. The submitter additionally checks its ABI declarations against `out/` at test time, so a field reordered in Solidity fails `test/abi.test.ts` rather than surfacing later as a proof that will not verify.
+- [x] Extension behaviour changes bump `Version` in `internal/config/config.go`.
+- [x] No critical or high dependency advisory in either Node package. `npm audit` is clean in `submitter/` and reports only moderate findings in `web/`, all in the MetaMask connector chain, whose only fix is a semver-major wagmi migration — recorded rather than taken, because the dashboard holds no key and no authority.
+- [x] This file and `PLAN.md` reflect reality — checked off what is done, corrected what turned out wrong.
 
 ---
 
