@@ -210,6 +210,12 @@ docs/               PRD.md, DOCS.md, PLAN.md, phases.md
 # looks well formed.
 ./scripts/xrpl-settlement.sh
 
+# A payment through Flare's real instruction relay on Coston2, after
+# aegis-e2e.sh verify. Funds the treasury, records its starting sequence,
+# allowlists a destination, then propose -> approve -> dispatch -> signed.
+# Settlement is the submitter's job and needs FDC_VERIFIER_API_KEY.
+./scripts/coston2-payment.sh
+
 # Contracts
 forge build && forge test -vvv && forge fmt
 
