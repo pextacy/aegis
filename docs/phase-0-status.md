@@ -8,15 +8,22 @@ Last updated: 2026-08-02
 
 ## What is blocking
 
-Three things, all of which require a human with an account. Nothing else in Phase 0 is outstanding.
+Two things. Both were checked rather than assumed, and neither has a workaround that does not involve a human.
 
 | # | Blocker | Who | Effort |
 |---|---|---|---|
 | 1 | Coston2 indexer database credentials | Flare technical support | request now, unknown turnaround |
 | 2 | Fund `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from the faucet | you | one minute |
-| 3 | ngrok account, authtoken, reserved domain | you | five minutes |
 
 Blocker 1 has unknown latency and gates the whole project — send that request first. Phases 1 and 2 are fully independent of it and can start immediately.
+
+**The tunnel is no longer a blocker.** It was, when the plan assumed ngrok. cloudflared reaches the same result with no account, so `./scripts/tunnel.sh` now brings up a public HTTPS tunnel to port 6674 and writes the URL into `.env.coston2` and `.env` itself. The cost is that a quick tunnel gets a new URL on every restart, which means re-running `post-build.sh` to re-register the machine under it. Reserving an ngrok domain removes that annoyance and `./scripts/tunnel.sh --ngrok <domain>` uses it — worth doing eventually, not worth blocking on.
+
+### Why neither remaining blocker has a workaround
+
+**The proxy cannot run without the indexer.** `tee-proxy` v0.0.18 calls `database.Connect(&cfg.DB)` unconditionally in `internal/proxy/proxy.go` and panics if it fails — there is no code path that boots without a live C-chain indexer connection. The `direct` endpoint in its config looked like a possible substitute; it is not. It registers an extra `/direct` HTTP route on the external server and changes nothing about where instructions are read from. Credentials are genuinely required.
+
+**The faucet requires a human.** `https://faucet.flare.network/coston2` serves a Google reCAPTCHA (site key `6LfSHCYsAAAAAMCSBtiMuNjEqc0P5FxmRFbNW3Lv`) and grants 100 C2FLR per address per 24 hours. There is no documented API, and working around the captcha would mean defeating a third party's abuse control, which is not something to do for convenience. One click in a browser.
 
 ### 1. Indexer credentials — request text
 
@@ -58,23 +65,24 @@ The pre-flight check requires at least `0.01 C2FLR` and currently reports `balan
 cast balance 0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5 --rpc-url https://coston2-api.flare.network/ext/C/rpc
 ```
 
-### 3. ngrok
-
-The binary is installed (3.39.10). What is left needs your account:
+### 3. Tunnel — done, nothing needed from you
 
 ```bash
-ngrok config add-authtoken <token from https://dashboard.ngrok.com/get-started/your-authtoken>
+./scripts/tunnel.sh          # leave running in its own terminal
 ```
 
-Then reserve the free static domain at `https://dashboard.ngrok.com/domains` and put it in `.env.coston2`:
+Starts a cloudflared quick tunnel to port 6674 and writes `EXT_PROXY_URL` into `.env.coston2` and `.env`. No account. One is live now at `https://scheme-warren-clicks-nikon.trycloudflare.com`, verified reachable — it answers 502, which is the tunnel working and nothing listening on 6674 yet.
+
+Each run produces a different URL. If it changes after the extension was registered, re-run `./scripts/post-build.sh` so the machine re-registers under the new one.
+
+To stop that happening, reserve the free static ngrok domain at `https://dashboard.ngrok.com/domains`, then:
 
 ```bash
-EXT_PROXY_URL=https://<your-domain>.ngrok-free.app
+ngrok config add-authtoken <token>
+./scripts/tunnel.sh --ngrok <your-domain>.ngrok-free.app
 ```
 
-Re-activate with `./scripts/use-chain.sh coston2` after editing.
-
-ngrok's free tier gives one reserved domain that survives restarts. cloudflared quick tunnels mint a new URL every run, which forces an `EXT_PROXY_URL` edit and a re-registration each time — that is why this is ngrok.
+ngrok is installed (3.39.10) and the script handles it. This is a convenience upgrade, not a precondition.
 
 ---
 
@@ -158,7 +166,7 @@ Only 6674 is tunnelled. Exposing it makes the proxy HTTP API reachable by anyone
 | `EXTENSION_ID` | pending — written to `config/extension.env` by `pre-build.sh` |
 | `INSTRUCTION_SENDER` | pending — same file |
 | Code hash | pending — expect a value starting `0x194844cf` for a simulated TEE |
-| Tunnel domain | pending — your reserved ngrok domain |
+| Tunnel URL | `https://scheme-warren-clicks-nikon.trycloudflare.com` — live, but a quick tunnel, so re-read it from `.env.coston2` after any `tunnel.sh` restart |
 
 ---
 
@@ -169,10 +177,10 @@ Only 6674 is tunnelled. Exposing it makes the proxy HTTP API reachable by anyone
 | P0-1 Indexer credentials | **blocked** | request text drafted above, needs sending |
 | P0-2 Fund the wallet | **blocked** | key generated, faucet run is yours |
 | P0-3 Clone and pin the scaffold | **done** | `f48cafb`, vendored, committed |
-| P0-4 Reserve an ngrok domain | **partial** | binary installed, account and domain are yours |
+| P0-4 Public HTTPS tunnel | **done** | cloudflared live via `scripts/tunnel.sh`; ngrok domain optional |
 | P0-5 Fill `.env` | **done** | `.env.coston2` written, activated |
 | P0-6 Fill the indexer `[db]` block | **partial** | host/port/database filled and verified, credentials pending P0-1 |
-| P0-7 Run the scaffold end-to-end | **blocked** | needs 1, 2 and 4 |
+| P0-7 Run the scaffold end-to-end | **blocked** | needs 1 and 2; everything not needing them passes |
 | P0-8 Record the environment | **done** | this file |
 
 ---
@@ -208,11 +216,11 @@ Facts established by running things, not by reading documentation:
 In order, from the project root:
 
 ```bash
-# terminal 1 — tunnel, before anything else
-ngrok http --domain=<your-reserved-domain> 6674
+# terminal 1 — tunnel, before anything else. Writes EXT_PROXY_URL itself.
+./scripts/tunnel.sh
 
 # terminal 2
-./scripts/use-chain.sh coston2                 # after setting EXT_PROXY_URL
+./scripts/phase0-check.sh                      # must be green first
 ./scripts/pre-build.sh                         # deploy sender, register extension
 ./scripts/start-services.sh --chain coston2    # redis + ext-proxy + extension-tee
 ./scripts/post-build.sh                        # allow code version, governance, register TEE

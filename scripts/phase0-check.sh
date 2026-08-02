@@ -62,20 +62,26 @@ else
 fi
 
 # --- P0-4: tunnel ---
+# Any public HTTPS tunnel to host port 6674 satisfies this. cloudflared needs no
+# account; ngrok needs one but its reserved domain survives restarts. What is
+# checked here is that the URL is set and actually reaches this machine — the
+# backend does not matter.
 if [[ -z "${EXT_PROXY_URL:-}" ]]; then
-    blocked "P0-4  EXT_PROXY_URL unset — reserve an ngrok domain and set it in .env.coston2"
+    blocked "P0-4  EXT_PROXY_URL unset — run ./scripts/tunnel.sh"
 elif [[ "$EXT_PROXY_URL" != https://* ]]; then
     blocked "P0-4  EXT_PROXY_URL must be https (got: $EXT_PROXY_URL)"
 else
-    ok "P0-4  EXT_PROXY_URL = $EXT_PROXY_URL"
-fi
-
-if ! command -v ngrok >/dev/null 2>&1; then
-    blocked "P0-4  ngrok not installed"
-elif ! ngrok config check >/dev/null 2>&1; then
-    blocked "P0-4  ngrok has no authtoken — ngrok config add-authtoken <token>"
-else
-    ok "P0-4  ngrok configured"
+    # 502 means the tunnel is up but nothing is listening on 6674 yet, which is
+    # the expected state before start-services.sh runs. Anything that answers
+    # proves the tunnel resolves to this machine; a connection failure does not.
+    TCODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$EXT_PROXY_URL/info" 2>/dev/null)
+    if [[ -z "$TCODE" || "$TCODE" == "000" ]]; then
+        blocked "P0-4  $EXT_PROXY_URL is not reachable — is the tunnel running? ./scripts/tunnel.sh"
+    elif [[ "$TCODE" == "200" ]]; then
+        ok "P0-4  tunnel live and proxy answering ($EXT_PROXY_URL)"
+    else
+        ok "P0-4  tunnel live, proxy not up yet — HTTP $TCODE ($EXT_PROXY_URL)"
+    fi
 fi
 
 # --- P0-3 / toolchain ---
