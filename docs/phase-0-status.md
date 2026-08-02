@@ -91,6 +91,9 @@ ngrok's free tier gives one reserved domain that survives restarts. cloudflared 
 | ngrok | 3.39.10 | any | installed, unauthenticated |
 | jq | 1.7.1 | any | ok |
 | git | 2.52.0 | any | ok |
+| bash | 5.3.15 at `/opt/homebrew/bin/bash` | **4.4+** | installed — see below |
+
+**Run the scaffold's scripts with `/opt/homebrew/bin/bash`, not the system one.** macOS ships bash 3.2.57, and the scaffold expands possibly-empty arrays under `set -u`, which only became legal in bash 4.4. On 3.2, `test-conformance.sh` dies with `body_args[@]: unbound variable` and reports three false failures on the three fixtures that send no request body. The extension is fine; the script is not portable. Installing bash 5 fixes it without touching a scaffold file, which is what P0-7 requires. `phase0-check.sh` now fails if it runs under an older shell.
 
 ### Scaffold pin
 
@@ -195,6 +198,8 @@ Facts established by running things, not by reading documentation:
   ```
 
   That is the best possible failure. The proxy parsed its config, resolved the host, opened a TCP connection, completed a MySQL handshake, and was rejected at authentication. Config format, chain id, contract addresses, volume mount, and network path are all confirmed working. Substituting real credentials is the entire remaining change. Containers were torn down afterwards.
+- **The extension satisfies the container contract.** `test-unit.sh` passes, and `test-conformance.sh` passes 16 of 16 fixtures — success paths, counter accumulation, malformed payloads, unknown op type, unknown op command, invalid hex, method-not-allowed on both endpoints, unknown path, and final `GET /state`. This runs with no chain, no Docker and no proxy, so the whole request/response surface Aegis will replace in Phase 3 is verified correct before any of the blockers clear.
+- **The scaffold's scripts need bash 4.4+.** Found by running them: three conformance fixtures failed under macOS bash 3.2 for a shell-portability reason, not an extension one. Documented above.
 
 ---
 

@@ -89,6 +89,17 @@ else
     blocked "tool     docker daemon not running"
 fi
 
+# The scaffold's scripts expand possibly-empty arrays under `set -u`, which is
+# an error in bash < 4.4. macOS ships 3.2.57, where test-conformance.sh reports
+# three false failures with "body_args[@]: unbound variable".
+BASH_MAJOR="${BASH_VERSINFO[0]:-0}"
+BASH_MINOR="${BASH_VERSINFO[1]:-0}"
+if (( BASH_MAJOR > 4 || (BASH_MAJOR == 4 && BASH_MINOR >= 4) )); then
+    ok "tool     bash $BASH_MAJOR.$BASH_MINOR"
+else
+    blocked "tool     bash $BASH_MAJOR.$BASH_MINOR is too old for the scaffold scripts — brew install bash, then run them with /opt/homebrew/bin/bash"
+fi
+
 # --- chain reachability ---
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CHAIN_URL" \
     -H 'content-type: application/json' \
