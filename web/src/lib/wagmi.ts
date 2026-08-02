@@ -1,7 +1,7 @@
 "use client";
 
-import { injected } from "@wagmi/core";
 import { createConfig, http, type Config } from "wagmi";
+import { injected } from "wagmi/connectors/injected";
 
 import { buildChain } from "./chains";
 import { requireConfig } from "./config";
@@ -13,10 +13,10 @@ import { requireConfig } from "./config";
  * this repository does not have, and a connector configured with a stand-in id
  * is a connector that fails at the worst moment.
  *
- * `injected` comes from @wagmi/core rather than the `wagmi/connectors` barrel:
- * that barrel drags in the Base Account SDK, whose own optional dependencies do
- * not resolve, and a bundle should not fail over a connector this app does not
- * offer.
+ * `injected` is imported from `wagmi/connectors/injected` rather than the
+ * `wagmi/connectors` barrel. The barrel pulls in every connector wagmi ships,
+ * including SDKs this app does not offer and whose optional dependencies do not
+ * always resolve; the subpath export brings in one connector and nothing else.
  */
 let cached: Config | undefined;
 

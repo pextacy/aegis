@@ -360,7 +360,7 @@ These apply to every commit in every phase, from `CLAUDE.md`. A phase cannot clo
 - [x] `opType` / `opCommand` changes touch all three locations. `check.sh` asserts the three-way alignment directly.
 - [x] ABI changes are followed by `./scripts/generate-bindings.sh`. The submitter additionally checks its ABI declarations against `out/` at test time, so a field reordered in Solidity fails `test/abi.test.ts` rather than surfacing later as a proof that will not verify.
 - [x] Extension behaviour changes bump `Version` in `internal/config/config.go`.
-- [x] No critical or high dependency advisory in either Node package. `npm audit` is clean in `submitter/` and reports only moderate findings in `web/`, all in the MetaMask connector chain, whose only fix is a semver-major wagmi migration — recorded rather than taken, because the dashboard holds no key and no authority.
+- [x] **No dependency advisory of any severity, in either Node package.** `npm audit` reports zero in `submitter/` and zero in `web/`, from a clean `npm ci` as well as from the working tree. The last eight were all in the MetaMask SDK connector chain and needed the wagmi 2 → 3 migration, which is now done: it removed 425 packages, and the app's only code change was importing `injected` from `wagmi/connectors/injected` instead of working around the old barrel through `@wagmi/core`. The `axios` override went with them, because the package it pinned is no longer in the tree at all.
 - [x] This file and `PLAN.md` reflect reality — checked off what is done, corrected what turned out wrong.
 
 ---
