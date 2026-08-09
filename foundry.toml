@@ -6,3 +6,9 @@ libs = ["lib"]
 # and restore the remapping:
 #   remappings = ["flare-smart-contracts-v2=lib/flare-smart-contracts-v2"]
 via-ir = true
+# The optimizer is on because PaymentController does not fit under the 24 KB
+# deploy limit without it. `runs` is deliberately low: this is a treasury, and
+# a contract that cannot be deployed at all is a worse outcome than one whose
+# hot paths cost a little more gas.
+optimizer = true
+optimizer_runs = 200
