@@ -1,11 +1,17 @@
 /**
- * The `PaymentSigned` subscription.
+ * The signature subscription.
  *
  * Two paths reach the same handler: a replay of everything between the cursor
  * and the current head, and a live websocket subscription from there on. The
  * replay is what makes a restart safe — a signature emitted while the process
  * was down is picked up rather than lost — and the on-chain terminal-state check
  * is what makes the overlap between the two harmless.
+ *
+ * Two events reach it too. `PaymentSigned` carries a finished blob from a
+ * single-key treasury; `PaymentMultiSigned` says a quorum has been collected
+ * and carries nothing, because assembling the shares is this process's job.
+ * Both converge on the same `SignedPayment`, so everything downstream —
+ * submission, confirmation, the FDC proof — is one code path.
  */
 
 import { parseEventLogs } from "viem";
@@ -15,6 +21,7 @@ import type { Clients } from "./clients.js";
 import type { Config } from "./config.js";
 import { FileCursor } from "./cursor.js";
 import { describeError, log } from "./log.js";
+import { assembleQuorumPayment } from "./multisign.js";
 import type { SignedPayment, Settler } from "./settle.js";
 
 /** Reads a `PaymentSigned` log, rejecting one whose arguments did not decode. */
@@ -68,10 +75,12 @@ export class Watcher {
     log.info("replaying", { fromBlock: from, toBlock: head });
     await this.replay(from, head);
 
+    // Subscribed by address rather than by event, so both the single-key and
+    // the quorum path arrive on one subscription and neither can be forgotten
+    // when the other is changed.
     this.unwatch = this.clients.wsClient.watchContractEvent({
       address: this.config.paymentController,
       abi: paymentControllerAbi,
-      eventName: "PaymentSigned",
       onLogs: (logs) => {
         void this.onLogs(logs);
       },
@@ -79,7 +88,7 @@ export class Watcher {
         log.error("subscription error", { reason: describeError(error) });
       },
     });
-    log.info("watching PaymentSigned", { address: this.config.paymentController });
+    log.info("watching for signatures", { address: this.config.paymentController });
   }
 
   stop(): void {
@@ -105,11 +114,51 @@ export class Watcher {
   }
 
   private async onLogs(logs: readonly Log[]): Promise<void> {
-    const decoded = parseEventLogs({ abi: paymentControllerAbi, eventName: "PaymentSigned", logs: [...logs] });
-    for (const entry of decoded) {
+    const signed = parseEventLogs({ abi: paymentControllerAbi, eventName: "PaymentSigned", logs: [...logs] });
+    for (const entry of signed) {
       await this.handle(readSignedPayment(entry.args));
       if (entry.blockNumber !== null) this.cursor.write(entry.blockNumber);
     }
+
+    const quorums = parseEventLogs({ abi: paymentControllerAbi, eventName: "PaymentMultiSigned", logs: [...logs] });
+    for (const entry of quorums) {
+      await this.handleQuorum(entry.args.requestId);
+      if (entry.blockNumber !== null) this.cursor.write(entry.blockNumber);
+    }
+  }
+
+  /**
+   * Assembles a collected quorum, then carries it exactly as a single-key
+   * signature is carried.
+   *
+   * An assembly that fails leaves the request in `Signed` and is retried on the
+   * next replay, like every other recoverable failure here. Submitting a
+   * transaction short of its quorum would be the opposite of recoverable: XRPL
+   * rejects it, burning the fee and consuming the sequence for a payment that
+   * delivers nothing.
+   */
+  private async handleQuorum(requestId: bigint | undefined): Promise<void> {
+    if (requestId === undefined) {
+      log.error("PaymentMultiSigned log is missing its request id");
+      return;
+    }
+
+    const key = requestId.toString();
+    if (this.inFlight.has(key)) {
+      log.debug("already working on this request", { requestId });
+      return;
+    }
+
+    let payment: SignedPayment;
+    try {
+      payment = await assembleQuorumPayment(this.clients, this.config, requestId);
+    } catch (error) {
+      log.error("could not assemble the quorum signature", { requestId, reason: describeError(error) });
+      return;
+    }
+
+    log.info("assembled a quorum signature", { requestId, txHash: payment.txHash });
+    await this.handle(payment);
   }
 
   private async handle(payment: SignedPayment): Promise<void> {

@@ -46,6 +46,74 @@ export const paymentControllerAbi = [
           { name: "proposer", type: "address" },
           { name: "committedUsd", type: "uint256" },
           { name: "windowIndex", type: "uint256" },
+          { name: "multiSignDigest", type: "bytes32" },
+          { name: "quorumRequired", type: "uint8" },
+        ],
+      },
+    ],
+  },
+  {
+    // Emitted once a k-of-n payment has collected its quorum. There is no blob
+    // in it: the shares are published individually and assembling them is the
+    // submitter's job, which is what makes the assembler powerless rather than
+    // trusted.
+    type: "event",
+    name: "PaymentMultiSigned",
+    inputs: [
+      { name: "requestId", type: "uint256", indexed: true },
+      { name: "treasuryId", type: "uint256", indexed: true },
+      { name: "collected", type: "uint8", indexed: false },
+      { name: "quorum", type: "uint8", indexed: false },
+    ],
+  },
+  {
+    type: "function",
+    name: "partialSignaturesOf",
+    stateMutability: "view",
+    inputs: [{ name: "requestId", type: "uint256" }],
+    outputs: [
+      {
+        type: "tuple[]",
+        components: [
+          { name: "signerAccountId", type: "bytes32" },
+          { name: "signerPubKey", type: "bytes" },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "TREASURY_REGISTRY",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const;
+
+/**
+ * The registry read the assembler needs: which XRPL account a payment leaves.
+ *
+ * Discovered from the payment controller rather than configured, so a submitter
+ * pointed at one deployment cannot be reading another deployment's treasuries.
+ */
+export const treasuryRegistryAbi = [
+  {
+    type: "function",
+    name: "getTreasury",
+    stateMutability: "view",
+    inputs: [{ name: "treasuryId", type: "uint256" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "xrplAccountId", type: "bytes32" },
+          { name: "xrplAddress", type: "string" },
+          { name: "policyId", type: "uint256" },
+          { name: "frozen", type: "bool" },
+          { name: "nextSequence", type: "uint32" },
+          { name: "sequenceConfirmed", type: "bool" },
         ],
       },
     ],
