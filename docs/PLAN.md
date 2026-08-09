@@ -6,14 +6,14 @@ Six phases. Each has concrete deliverables and acceptance criteria that are pass
 
 ## Phase 0 — Unblock the critical path
 
-Everything else waits on two external dependencies. Start these before writing any code.
+Everything else waits on the environment being real. Start these before writing any code.
 
 ### Deliverables
 
-1. **Coston2 indexer credentials requested.** The `ext-proxy` queries Flare's C-chain indexer to find TEE instruction events and cannot start without database access. Request through Flare technical support or `@FlareDevs`, stating what is being built. The Coston2 indexer is reachable without a VPN at `34.38.42.208:3306`, database `indexer`. Coston uses different credentials and requires a VPN — use Coston2.
+1. **A C-chain indexer the `ext-proxy` can read.** The proxy queries one to find TEE instruction events and panics without database access. Flare issues credentials for a shared Coston2 instance on request, but `flare-system-c-chain-indexer` is open source and writes the same schema, so `./scripts/indexer.sh up` runs our own against the public RPC and nothing waits on support.
 2. **Coston2 wallet funded** from the faucet, with enough C2FLR for gas, extension registration, and per-instruction fees.
 3. **Scaffold running unmodified.** Clone `flare-foundation/fce-extension-scaffold`, run the Hello World `SAY_HELLO` and `SAY_GOODBYE` end-to-end against Coston2 with `SIMULATED_TEE=true`. Do not touch a line of Aegis code until this passes.
-4. **Reserved tunnel domain.** ngrok free tier gives one reserved domain that survives restarts; cloudflared quick tunnels generate a new URL every run and force `EXT_PROXY_URL` edits and re-registration each time. Use ngrok.
+4. **A public HTTPS tunnel to port 6674.** `./scripts/tunnel.sh` brings up a cloudflared quick tunnel with no account and writes `EXT_PROXY_URL` itself. The cost is a new URL per run, so a restart after registration means re-running `post-build.sh`; `./scripts/tunnel.sh --ngrok <domain>` uses a reserved ngrok domain instead and survives restarts.
 
 ### Acceptance
 
@@ -34,7 +34,7 @@ No TEE involvement. Pure contract work, fast iteration under `forge test`.
 
 1. `PolicyEngine.sol` — policy creation, immutable versions, tier resolution, allowlist, role bitmasks.
 2. `TreasuryRegistry.sol` — treasury creation, freeze, sequence tracking. `bindXrplAccount` written but not yet reachable.
-3. `PaymentController.sol` — the full state machine: propose, approve, dispatch guard, rolling window accounting with lazy pruning.
+3. `PaymentController.sol` — the full state machine: propose, approve, withdraw an approval, dispatch guard, rolling window accounting with lazy pruning.
 4. FTSO integration — derived feed id, staleness check, drops-to-USD conversion.
 5. Complete test suite for every rule.
 
@@ -48,6 +48,8 @@ Each of these is an individual passing test:
 - Non-allowlisted destination reverts. Destination tag `0` correctly means "any tag".
 - Proposer cannot approve their own request.
 - The same address cannot approve twice.
+- An approver can withdraw their own approval before dispatch, and cannot withdraw anyone else's. Withdrawing below the threshold returns the request to `Proposed`, so a dispatch that would have proceeded is refused.
+- An approval from an address whose approver role was revoked after it approved is not counted at dispatch, and the payment is refused if that takes it under the threshold.
 - Dispatch before `eligibleAt` reverts.
 - A price older than 180 seconds reverts dispatch.
 - A frozen treasury rejects propose, approve, and dispatch.
@@ -176,11 +178,30 @@ Post-hackathon, specified now because the architecture depends on it being possi
 
 ### Deliverables
 
-1. k-of-n signing across TEE machines, with `getRandomTeeIds(extensionId, n)` returning multiple machines.
-2. XRPL `SignerList` configured with the n enclave-held keys.
-3. Multi-sign serialisation: hash prefix `0x534D5400` with the signer's AccountID appended, per-signer `Signers` array entries.
+1. k-of-n signing across TEE machines, with `getRandomTeeIds(extensionId, n)` returning multiple machines. **Done.**
+2. XRPL `SignerList` configured with the n enclave-held keys, and the master key retired afterwards so the quorum is the only authority rather than an additional one. **Done.**
+3. Multi-sign serialisation: hash prefix `0x534D5400` with the signer's AccountID appended, per-signer `Signers` array entries. **Done**, validated byte-for-byte against multi-signed transactions taken off XRPL.
 4. Migration of `AegisInstructionSender.requestSignature` to call PMW instead of the custom extension when its interface becomes public.
 5. Key import path over an off-chain channel to the proxy, for existing treasuries.
+
+### Acceptance
+
+Every one of these is a passing test or a passing script run:
+
+- Three separate enclave processes produce three different signer keys for one treasury, and a machine holding a master key for that treasury still refuses to contribute a k-of-n signature — the two keyspaces do not leak into each other.
+- Reassembling a validated multi-signed transaction from its decoded fields reproduces XRPL's own blob and its hash.
+- Two signatures produced by other software, over a transaction the network validated, verify against the multi-signing digest this code computes. That is what shows the prefix, the empty `SigningPubKey` and the appended signer AccountID are XRPL's rather than merely self-consistent.
+- A signature collected for one signer does not verify under another signer's digest.
+- Installing a signer list is refused before every key is bound; retiring a master key is refused before the list is live.
+- A payment dispatched to a 2-of-3 treasury reaches `Signed` on two shares, and a third arriving afterwards is recorded as ignored rather than reverting.
+- A payload whose amount was altered after the digest is refused by every machine with `policy digest mismatch`.
+- A payload with *only* the source account changed — leaving the policy digest matching — is refused by every machine with `source account digest mismatch`.
+
+### Notes
+
+The second digest is the part of this phase that was not in the original plan and is not optional. `SignRequest` carries no source account, because in the single-key path the enclave supplies it from its own keystore. A signer key has no such state, so the account must travel with the instruction, and every field that travels with an instruction is one a relayer can alter. Binding it with `keccak256(abi.encode(policyDigest, sourceAccountId))` adds the check without touching the digest every existing payment is already validated against.
+
+One step is asserted rather than proven, and it is worth stating rather than glossing: no FDC attestation type covers a `SignerListSet`, so its installation is recorded as an XRPL transaction hash by a policy admin. The failure mode of a false claim is fail-closed — dispatch routes to a quorum XRPL then refuses — which is why an assertion is tolerable there and would not be anywhere a payment could go out on it.
 
 ### Why the architecture already supports this
 
@@ -194,7 +215,7 @@ PMW provides natively what phase 6 builds by hand: wallets as sets of keys acros
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Indexer credentials delayed | Total block — the proxy cannot start | Requested in phase 0, before any code. Phases 1 and 2 are fully independent of the TEE and proceed in parallel while waiting |
+| An external dependency of the proxy stalls | Total block — the proxy cannot start | Own every one that can be owned: the indexer runs from `./scripts/indexer.sh`, the tunnel from `./scripts/tunnel.sh`, neither needing an account. Phases 1 and 2 are independent of the TEE and proceed in parallel regardless |
 | FCC is not a fully public production system | API changes mid-build | Pin the scaffold commit. Keep all FCC contact surface inside `AegisInstructionSender.sol` and `internal/extension/`. Bump `Version` on every behaviour change |
 | XRPL serialisation subtly wrong | Signatures rejected, wasted debugging | Phase 2 is standalone and validated against reference vectors before touching the enclave |
 | System contract addresses move to `FlareContractRegistry` | Deploy config breaks | Addresses read from `config/coston2/deployed-addresses.json` in one place; the migration is a one-line change |
@@ -207,9 +228,9 @@ PMW provides natively what phase 6 builds by hand: wallets as sets of keys acros
 
 ## Sequencing
 
-Phases 1 and 2 are independent of each other and of phase 0's external dependency. Run all three concurrently from day one. Phase 3 requires all of 0, 1, and 2. Phase 4 requires 3. Phase 5 requires 4. Phase 6 is post-program.
+Phases 1 and 2 are independent of each other and of phase 0's environment work. Run all three concurrently from day one. Phase 3 requires all of 0, 1, and 2. Phase 4 requires 3. Phase 5 requires 4. Phase 6 is post-program.
 
-The dependency that determines the schedule is the indexer credentials. Request them first, then build the two halves that do not need them.
+The one thing on the critical path that cannot be automated is the faucet, which needs a human and a captcha. Do it first, then build the two halves that do not need it.
 
 ---
 

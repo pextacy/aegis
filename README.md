@@ -16,6 +16,8 @@ Nothing about that is a promise made by a service. It is a refusal built into th
 | Amount is above the highest tier's ceiling | Reverts at proposal — no number of approvals authorises it |
 | The proposer approves their own request | Reverted. Segregation of duties is enforced, not requested |
 | The same address approves twice | Reverted |
+| An approver changes their mind during the timelock | They withdraw their own approval and the request drops back below its threshold, so the dispatch is refused. No one can withdraw anyone else's |
+| An approver's role is revoked after they approved | Their approval stops counting. Dispatch weighs only approvals still backed by the role, so a compromised approver's vote cannot carry a payment they already signed off |
 | Dispatch before the tier's timelock | Reverted |
 | The XRP/USD feed is more than 180 seconds old | Reverted. There is no cached price to fall back to |
 | The rolling window is already committed | Reverted, with the figures that make up the refusal |
@@ -204,6 +206,12 @@ docs/               PRD.md, DOCS.md, PLAN.md, phases.md
 # The policy cycle against a local chain and the real enclave, no faucet
 ./scripts/local-integration.sh
 
+# The k-of-n cycle, across three real enclave processes on a local chain.
+# Collects three signer keys, hands the account to them, retires the master
+# key, then signs a payment with two of three and refuses both a tampered
+# payload and one redirected at another account.
+./scripts/local-quorum.sh
+
 # The same, but settled for real on XRPL Testnet. Needs no funded Coston2
 # wallet — the XRPL faucet is an HTTP endpoint — and is the only thing that
 # proves the signature is one the network accepts rather than one that merely
@@ -243,7 +251,8 @@ cd web && npm run typecheck && npm test && npm run build
 
 ## Known limitations
 
-- **One TEE machine holds the key.** Losing the machine loses the treasury. k-of-n signing across machines is phase 6, and the architecture is built for it: `requestSignature` is the only function in the system that touches signing.
+- **A single-key treasury depends on one machine.** Losing it loses the treasury. That is now opt-out rather than inherent: a treasury can commit to k-of-n, collect n enclave signer keys, hand its XRPL account to them with a `SignerList` and retire the master key, after which any k of n can pay and losing the other n − k costs nothing. `./scripts/local-quorum.sh` runs the whole arrangement across three real enclaves. What stays true is that FCC selects machines at random rather than by name, so the fan-out asks for as many machines as the set is sized for and a machine without a signer key refuses — which works when the extension has the machines the set was sized for, and needs an interface Flare has not published to do better.
+- **The signer list's installation is recorded, not proven.** No FDC attestation type covers a `SignerListSet`, so a policy admin records the XRPL transaction hash that installed it and anyone can check that against the ledger. A false claim cannot authorise a payment: it routes dispatch to a quorum XRPL then refuses, which is a payment that does not land and a window spend that comes back.
 - **The dashboard's audit log is bounded by the RPC.** The public Coston2 endpoint refuses an `eth_getLogs` range wider than 30 blocks, so the log is fetched in chunks over a configured lookback and the page states the block it reached. Point it at an archive node and raise `NEXT_PUBLIC_LOG_CHUNK_BLOCKS` for the whole history in one call. All *state* is read directly from the contracts and is never bounded this way.
 - **`setExtensionId()` gets more expensive as other people register extensions.** It scans Flare's shared TEE registry from `FIRST_PUBLIC_EXTENSION_ID = 0x10000` upward looking for its own address, so its cost is set by how many public extensions exist chain-wide, not by anything Aegis does. On Coston2 that counter is past 65,880 — roughly 350 entries to walk, around 1.7M gas worst case — and it only ever grows. Somewhere past a few thousand extensions the call stops fitting in a block and this deployment step becomes impossible. It is a one-shot call per deployment, so the exposure is a deployment that cannot complete rather than a treasury that cannot pay, and the function is one `CLAUDE.md` marks do-not-modify because it comes from the FCC scaffold. Worth knowing before it is urgent: the fix is Flare's to make, by having `register()` return the id to the caller rather than making every extension search for itself.
 

@@ -125,6 +125,8 @@ case dataFixed.OPType == teeutils.ToHash(config.OPTypeXRPL): // internal/extensi
 
 A mismatch is the single most common cause of `unsupported op type` and `unsupported op command`. `bytes32("...")` truncates at 32 bytes — keep the strings short.
 
+There are six commands: `KEYGEN`, `SIGNTX`, `STATUS`, and the k-of-n three — `SKEYGN` (this machine's signer key), `MSIGN` (this machine's share of a quorum signature) and `SETUP` (the signer list, then the master key's retirement). `./scripts/check.sh` asserts all six across the three locations, so a drift fails there rather than on a live instruction.
+
 Bump `Version` in `internal/config/config.go` whenever behaviour or the on-chain interface changes. The code version is part of the extension lifecycle and the attestation identity.
 
 ---
@@ -184,7 +186,9 @@ The proxy needs Coston2 indexer database credentials to start. They are issued o
 - Amounts are in **drops**. 1 XRP = 1,000,000 drops. Never let a float touch an amount; use `uint64` and `bigint` throughout.
 - Fields serialise sorted by `(typeCode, fieldCode)`, not by name and not by declaration order.
 - Omit `DestinationTag` entirely when it is zero. Serialising a zero tag produces a different hash than omitting it.
-- Single-sign hash prefix is `0x53545800`. Transaction id prefix is `0x54584E00`. Multi-sign is `0x534D5400` and appends the signer's AccountID — that path is phase 5, not v1.
+- Single-sign hash prefix is `0x53545800`. Transaction id prefix is `0x54584E00`. Multi-sign is `0x534D5400` and appends the signer's AccountID, which is what stops a signature collected for one signer being replayed as another's — that path is built and lives in `internal/xrpl/multisign.go`.
+- A multi-signed transaction carries `SigningPubKey` as the **empty blob**, not omitted. XRPL reads the emptiness, not the absence, as "authorise against the SignerList", and omitting the field is a different serialisation and a different hash.
+- The `Signers` array must be sorted by AccountID ascending; `SignerEntries` on a `SignerListSet` must not be, and the serialiser preserves the order it is given for exactly that reason.
 - Hash is SHA-512Half: `sha512` then take the first 32 bytes. Not `sha256`.
 - ECDSA signatures must be DER-encoded with a low-S value, and nonces derived per RFC 6979.
 - Set `tfFullyCanonicalSig` (`0x80000000`) in `Flags`.

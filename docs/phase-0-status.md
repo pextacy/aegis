@@ -2,8 +2,6 @@
 
 The record `phases.md` P0-8 asks for, plus the live state of each Phase 0 task. Everything here is verified against the real environment, not assumed.
 
-Last updated: 2026-08-02
-
 ---
 
 ## What is blocking
@@ -14,47 +12,13 @@ One thing.
 |---|---|---|---|
 | 1 | Fund `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5` from the faucet | you | one minute |
 
-**The indexer credentials are no longer needed.** `tee-proxy` requires a C-chain indexer database, and Flare issues credentials for a shared one on request — unknown turnaround, gating everything. `flare-system-c-chain-indexer` is open source and writes exactly the schema `go-flare-common/pkg/database` reads, so `./scripts/indexer.sh up` now runs our own against the public Coston2 RPC. The proxy starts against it and reports `Database in sync`. Request the shared credentials anyway if you want them, but nothing waits on them.
-
-**The tunnel is no longer a blocker either.** `./scripts/tunnel.sh` brings up a cloudflared tunnel with no account and writes `EXT_PROXY_URL` itself.
+The two dependencies the plan called external are both resolved. The indexer is our own: `tee-proxy` calls `database.Connect` unconditionally and panics without one, but `flare-system-c-chain-indexer` is open source and writes exactly the schema `go-flare-common/pkg/database` reads, so `./scripts/indexer.sh up` runs one against the public Coston2 RPC and the proxy reports `Database in sync`. The tunnel is `./scripts/tunnel.sh` — cloudflared, no account, writes `EXT_PROXY_URL` into `.env.coston2` and `.env` itself.
 
 Run `./scripts/phase0-check.sh` for live state.
 
-**The tunnel is no longer a blocker.** It was, when the plan assumed ngrok. cloudflared reaches the same result with no account, so `./scripts/tunnel.sh` now brings up a public HTTPS tunnel to port 6674 and writes the URL into `.env.coston2` and `.env` itself. The cost is that a quick tunnel gets a new URL on every restart, which means re-running `post-build.sh` to re-register the machine under it. Reserving an ngrok domain removes that annoyance and `./scripts/tunnel.sh --ngrok <domain>` uses it — worth doing eventually, not worth blocking on.
-
-### Why neither remaining blocker has a workaround
-
-**The proxy cannot run without the indexer.** `tee-proxy` v0.0.18 calls `database.Connect(&cfg.DB)` unconditionally in `internal/proxy/proxy.go` and panics if it fails — there is no code path that boots without a live C-chain indexer connection. The `direct` endpoint in its config looked like a possible substitute; it is not. It registers an extra `/direct` HTTP route on the external server and changes nothing about where instructions are read from. Credentials are genuinely required.
-
 **The faucet requires a human.** `https://faucet.flare.network/coston2` serves a Google reCAPTCHA (site key `6LfSHCYsAAAAAMCSBtiMuNjEqc0P5FxmRFbNW3Lv`) and grants 100 C2FLR per address per 24 hours. There is no documented API, and working around the captcha would mean defeating a third party's abuse control, which is not something to do for convenience. The one alternative that still gets cited, `coston2-faucet.towolabs.com`, no longer resolves — NXDOMAIN — so do not spend time on it. One click in a browser is the whole task.
 
-### 1. Indexer credentials — request text
-
-Send via `https://flare.network/resources/technical-support` or `@FlareDevs`.
-
-> Subject: Coston2 indexer database credentials for a Flare Compute Extension
->
-> I am building Aegis, a rule-governed XRPL treasury for the current Flare program, entering both the Interoperable Asset Products and Confidential Compute Apps tracks.
->
-> Spending policy lives in Solidity contracts on Coston2 (amount tiers, per-tier approval thresholds and timelocks, a rolling spend window, and a destination allowlist priced through the FTSO XRP/USD feed). The XRPL signing key is generated inside and never leaves a Flare Confidential Compute TEE, which independently recomputes the on-chain policy digest and refuses to sign on a mismatch. Settlement is confirmed on-chain by FDC `Payment` and `ReferencedPaymentNonexistence` attestations against XRPL Testnet.
->
-> The extension is built on `flare-foundation/fce-extension-scaffold` and runs against Coston2 with `SIMULATED_TEE=true`. `ext-proxy` needs read access to the Coston2 C-chain indexer to observe TEE instruction events, and cannot start without it — it is the only thing blocking the build.
->
-> Could you issue read credentials for the Coston2 indexer database (`34.38.42.208:3306`, database `indexer`)? The host is reachable and answers on the MySQL protocol from here, so credentials are the only thing outstanding. If access is IP-restricted, my current egress address is `85.106.117.61`.
->
-> Deployer address: `0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5`
-> Chain: Coston2 (114)
-
-That egress address is what the server saw during the connection test below. It is a home or office IP and will change if the connection or network does — re-check with `curl -s ifconfig.me` before quoting it, and mention it only if they say access is IP-restricted.
-
-When the credentials arrive, put them in **both** files — `username` and `password` under `[db]`:
-
-- `config/proxy/extension_proxy.coston2.docker.toml`
-- `config/proxy/extension_proxy.coston2.toml`
-
-Both are gitignored. The host, port and database name are already filled in and verified.
-
-### 2. Fund the deployer
+### Fund the deployer
 
 ```
 https://faucet.flare.network/coston2
@@ -68,13 +32,13 @@ The pre-flight check requires at least `0.01 C2FLR` and currently reports `balan
 cast balance 0xbC479252c67526f9BAa0e70E7c27Cc53222b49b5 --rpc-url https://coston2-api.flare.network/ext/C/rpc
 ```
 
-### 3. Tunnel — done, nothing needed from you
+### Tunnel — done, nothing needed from you
 
 ```bash
 ./scripts/tunnel.sh          # leave running in its own terminal
 ```
 
-Starts a cloudflared quick tunnel to port 6674 and writes `EXT_PROXY_URL` into `.env.coston2` and `.env`. No account. One is live now at `https://scheme-warren-clicks-nikon.trycloudflare.com`, verified reachable — it answers 502, which is the tunnel working and nothing listening on 6674 yet.
+Starts a cloudflared quick tunnel to port 6674 and writes `EXT_PROXY_URL` into `.env.coston2` and `.env`. No account.
 
 Each run produces a different URL. If it changes after the extension was registered, re-run `./scripts/post-build.sh` so the machine re-registers under the new one.
 
@@ -112,7 +76,6 @@ ngrok is installed (3.39.10) and the script handles it. This is a convenience up
 |---|---|
 | Upstream | `https://github.com/flare-foundation/fce-extension-scaffold` |
 | Commit | `f48cafb889441a62e47c083f4be8dd7d3f456f83` |
-| Date | 2026-07-28 |
 | Subject | Merge branch 'feat/multi-language-scaffold' into 'main' |
 
 Vendored verbatim into the repository root. The scaffold's own documentation was moved to `docs/scaffold/` so the Aegis specs keep `docs/` — no source, script, or config file was modified, which is what P0-7 requires.
@@ -137,7 +100,7 @@ Reported consistent by `./scripts/check-versions.sh`:
 | Explorer | `https://coston2-explorer.flare.network` |
 | `FlareTeeManager` | `0x1a9C4A0f9D76c0b1D91d22E24E573a9b377618aE` |
 | Normal proxy | `https://tee-proxy-coston2-1.flare.rocks` |
-| Indexer | `34.38.42.208:3306`, database `indexer` |
+| Indexer | our own, via `./scripts/indexer.sh up`; Flare's shared Coston2 instance at `34.38.42.208:3306` (database `indexer`) is the fallback and needs credentials from support |
 
 ### Deployment identity
 
@@ -169,7 +132,7 @@ Only 6674 is tunnelled. Exposing it makes the proxy HTTP API reachable by anyone
 | `EXTENSION_ID` | pending — written to `config/extension.env` by `pre-build.sh` |
 | `INSTRUCTION_SENDER` | pending — same file |
 | Code hash | pending — expect a value starting `0x194844cf` for a simulated TEE |
-| Tunnel URL | `https://scheme-warren-clicks-nikon.trycloudflare.com` — live, but a quick tunnel, so re-read it from `.env.coston2` after any `tunnel.sh` restart |
+| Tunnel URL | a quick tunnel mints a new one per run — read it from `.env.coston2` after each `tunnel.sh` start |
 
 ---
 
@@ -177,13 +140,13 @@ Only 6674 is tunnelled. Exposing it makes the proxy HTTP API reachable by anyone
 
 | Task | State | Note |
 |---|---|---|
-| P0-1 Indexer credentials | **blocked** | request text drafted above, needs sending |
+| P0-1 An indexer the proxy can read | **done** | our own, `./scripts/indexer.sh up`; proxy logs `Database in sync` |
 | P0-2 Fund the wallet | **blocked** | key generated, faucet run is yours |
 | P0-3 Clone and pin the scaffold | **done** | `f48cafb`, vendored, committed |
 | P0-4 Public HTTPS tunnel | **done** | cloudflared live via `scripts/tunnel.sh`; ngrok domain optional |
 | P0-5 Fill `.env` | **done** | `.env.coston2` written, activated |
-| P0-6 Fill the indexer `[db]` block | **partial** | host/port/database filled and verified, credentials pending P0-1 |
-| P0-7 Run the scaffold end-to-end | **blocked** | needs 1 and 2; everything not needing them passes |
+| P0-6 Point the proxy at an indexer | **done** | targets the local `indexer-db` service; both proxy configs stay gitignored |
+| P0-7 Run the scaffold end-to-end | **blocked** | needs P0-2 alone; everything not needing it passes |
 | P0-8 Record the environment | **done** | this file |
 
 ---
@@ -200,15 +163,7 @@ Facts established by running things, not by reading documentation:
 - **The Go extension builds, vets, and tests clean under Go 1.26.4**, above the scaffold's 1.25.1 floor.
 - **The deploy path resolves end to end.** Pre-flight reaches Coston2, derives the deployer, resolves `FlareTeeManager`, and stops on exactly one thing: `insufficient funds (balance: 0 wei, minimum required: 10000000000000000 wei)`. Nothing between here and the deploy is unverified.
 - **All three images build.** `aegis-extension-tee` (22.4 MB, from `go/Dockerfile` with `SOURCE_DATE_EPOCH` from git), `local/tee-proxy` (126 MB, self-cloning at `v0.0.18`), and `redis:7-alpine` are on disk. `start-services.sh` will not have to build anything on the first real run.
-- **The proxy's only remaining blocker is the credentials themselves.** Starting `redis` + `ext-proxy` against Coston2 produced:
-
-  ```
-  PANIC  connecting to database: opening mysql connection to
-  34.38.42.208:3306/indexer as <issued-by-flare-support>:
-  Error 1045 (28000): Access denied for user ... (using password: YES)
-  ```
-
-  That is the best possible failure. The proxy parsed its config, resolved the host, opened a TCP connection, completed a MySQL handshake, and was rejected at authentication. Config format, chain id, contract addresses, volume mount, and network path are all confirmed working. Substituting real credentials is the entire remaining change. Containers were torn down afterwards.
+- **The proxy runs against our own indexer.** `redis` + `indexer-db` + `ext-proxy` come up against Coston2, the proxy logs `Database in sync` and serves its internal API while it waits for a registered TEE machine. Two things that cost time on the way: the public RPC caps `eth_getLogs` at 30 blocks, not the 1000 the sample config suggests, and the indexer build needs cgo because `supranational/blst` has no pure-Go path.
 - **The extension satisfies the container contract.** `test-unit.sh` passes, and `test-conformance.sh` passes 16 of 16 fixtures — success paths, counter accumulation, malformed payloads, unknown op type, unknown op command, invalid hex, method-not-allowed on both endpoints, unknown path, and final `GET /state`. This runs with no chain, no Docker and no proxy, so the whole request/response surface Aegis will replace in Phase 3 is verified correct before any of the blockers clear.
 - **The scaffold's scripts need bash 4.4+.** Found by running them: three conformance fixtures failed under macOS bash 3.2 for a shell-portability reason, not an extension one. Documented above.
 

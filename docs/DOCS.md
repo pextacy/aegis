@@ -167,7 +167,9 @@ Key functions:
 
 - `propose(uint256 treasuryId, bytes32 destAccountId, uint32 destTag, uint64 amountDrops)` — reads XRP/USD from FTSO, converts drops to an 18-decimal USD figure, checks allowlist, resolves the tier, checks the rolling window, stores the request with `eligibleAt = block.timestamp + tier.timelockSeconds`. Reverts early on any policy violation so users never approve a request that cannot execute.
 - `approve(uint256 requestId)` — increments approvals; transitions to `Approved` when `approvals >= tier.requiredApprovals`.
-- `dispatch(uint256 requestId, uint32 lastLedgerSequence, uint64 feeDrops) payable` — requires `Approved`, `block.timestamp >= eligibleAt`, treasury not frozen. Re-runs the full policy check (the FTSO price has moved since proposal; the rolling window may have been consumed by another request). Computes `policyDigest`, calls `AegisInstructionSender.requestSignature(...)`, forwards `msg.value` as the TEE instruction fee, moves to `Dispatched`.
+- `revokeApproval(uint256 requestId)` — the caller withdraws their own approval while the request is `Proposed` or `Approved`; an `Approved` request falls back to `Proposed`, so a dispatch cannot proceed on authorisation that has been taken back. The tier timelock is what makes this reachable: it exists to give an approver time to reconsider, and without a withdrawal path the only way to act on reconsidering is a guardian freeze of the whole treasury. Unlike `approve` it checks neither the approver role nor the freeze — a removed approver's entry still occupies the stored count and the approver set, so its owner must be able to take it out, and a freeze that preserved approvals would protect the payment it interrupted. `eligibleAt` is never restarted, or one approver could postpone a payment forever by approving and withdrawing.
+- `approversOf(uint256 requestId)` / `validApprovals(uint256 requestId)` — the live approver set, and how many of those approvals still come from an address holding `ROLE_APPROVER`. The second can be lower than `getRequest().approvals`, and it is the figure `dispatch` tests.
+- `dispatch(uint256 requestId, uint32 lastLedgerSequence, uint64 feeDrops) payable` — requires `Approved`, `block.timestamp >= eligibleAt`, treasury not frozen. Re-runs the full policy check (the FTSO price has moved since proposal; the rolling window may have been consumed by another request; an approver may have lost the role since approving, and only approvals still backed by it are counted). Computes `policyDigest`, calls `AegisInstructionSender.requestSignature(...)`, forwards `msg.value` as the TEE instruction fee, moves to `Dispatched`.
 - `recordSignature(uint256 requestId, bytes calldata signedBlob, bytes32 txHash)` — restricted to `AegisInstructionSender`. Moves to `Signed` and emits `PaymentSigned` which the submitter service watches.
 - `markFailed(uint256 requestId, bytes32 reason)` — restricted to `ExecutionVerifier`.
 
@@ -399,22 +401,23 @@ EXT_PROXY_URL=https://<your tunnel domain>
 
 Coston2 network facts: chain id `114`, RPC `https://coston2-api.flare.network/ext/C/rpc`, explorer `https://coston2-explorer.flare.network`.
 
-Indexer block, filled with the credentials you were issued:
+Indexer block. `./scripts/indexer.sh up` runs our own `flare-system-c-chain-indexer` and the docker config points at that service; the shared Coston2 instance at `34.38.42.208:3306` is the fallback and needs a `username` and `password` issued by Flare support:
 
 ```toml
 [db]
-host = "34.38.42.208"
+host = "indexer-db"
 port = 3306
-database = "indexer"
-username = "<issued>"
-password = "<issued>"
+database = "flare_ftso_indexer"
+username = "root"
+password = "root"
 log_queries = false
 ```
 
 ### 6.3 Sequence
 
 ```bash
-ngrok http 6674                              # separate terminal, before anything else
+./scripts/indexer.sh up                      # C-chain indexer the proxy reads
+./scripts/tunnel.sh                          # separate terminal; writes EXT_PROXY_URL itself
 ./scripts/pre-build.sh                       # compile, deploy, register extension
 ./scripts/start-services.sh --chain coston2  # redis + ext-proxy + extension-tee
 ./scripts/post-build.sh                      # allow code version, set governance, register TEE machine
@@ -479,7 +482,8 @@ Properties that hold:
 
 Known limitations in v1, stated plainly rather than hidden:
 
-- A single TEE machine holds the key, so machine loss means treasury loss. The k-of-n `SignerList` design that removes this is specified in `PLAN.md` phase 5 and is exactly what the PMW system application provides natively once it is public.
+- A treasury that stays on a single enclave key depends on one machine, and losing it loses the treasury. This is now a choice rather than the only option: `TreasuryRegistry.configureSignerSet` commits a treasury to k-of-n, `SKEYGN` collects one signer key per machine, and two master-key-signed setup transactions install an XRPL `SignerList` and then retire the master key. After that any k of n enclaves can authorise a payment and losing the other n − k costs nothing. What remains outside Aegis' reach is machine selection: `getRandomTeeIds` picks at random rather than by name, so the fan-out asks for as many machines as the signer set is sized for and a machine without a signer key refuses. Addressing a specific machine needs an interface Flare has not published.
+- The installation of a signer list is recorded rather than proven. No FDC attestation type covers a `SignerListSet`, so a policy admin supplies the XRPL transaction hash and anyone can check it against the ledger from the audit log. The failure mode of a false claim is fail-closed: dispatch routes to a quorum, XRPL refuses the transaction for want of a signer list, the payment is proven absent and its window spend is released.
 - `SIMULATED_TEE=true` during development means attestation is simulated. Production requires a GCP Confidential Space VM; the deployment path for that is in the scaffold's `DEPLOYMENT_STEPS.md`.
 - Policy amendment moves a treasury to a new `policyId`; it does not migrate historical spend accounting, which resets the rolling window. This is documented behaviour, and the amendment path carries its own timelock for that reason.
 
@@ -491,4 +495,24 @@ FCC ships PMW as a system application: it assembles and signs transactions on XR
 
 Aegis answers a different question: *under what conditions should that signature ever be produced*. It is a policy layer, and it is built as a Flare Compute Extension because the FCE framework is the public developer surface today while PMW's reserved system extension ids sit below `0x10000`.
 
-The migration is a swap of one module, not a rewrite. `AegisInstructionSender.requestSignature` is the only place that touches signing. When the PMW interface is public, that function calls PMW instead of the custom extension, and Aegis inherits native multisig, nonce chaining, and reissuance while every contract in §3.1 to §3.3 stays unchanged. That boundary is deliberate and is the reason `SignRequest` carries structured fields rather than a serialised blob.
+The migration is a swap of one module, not a rewrite. `AegisInstructionSender.requestSignature` and `requestMultiSignature` are the only places that touch signing. When the PMW interface is public, those functions call PMW instead of the custom extension, and Aegis inherits nonce chaining and reissuance while every contract in §3.1 to §3.3 stays unchanged. That boundary is deliberate and is the reason `SignRequest` carries structured fields rather than a serialised blob.
+
+Aegis now implements k-of-n itself, which does not make the migration less useful — it makes it cheaper. The signer set, the quorum accounting and the two setup transactions are all things PMW would provide natively, and the fact that they were built against the same `SignRequest` boundary is what will let them be handed over rather than reconciled.
+
+### 9.1 How k-of-n works here
+
+A treasury commits to `k` of `n` once, and never changes it: re-quorumming a live treasury means replacing a signer list on XRPL while payments are in flight, and a payment dispatched to the old set could no longer be signed by the new one. A different arrangement is a different treasury.
+
+The order of what follows is the only order XRPL permits.
+
+1. **Collect.** `requestSignerKeygen` fans one instruction out to `n` machines. Each generates a signer key in its own enclave, held in a map separate from any master key it also holds — a machine can legitimately be both the account's creator and one of its signers, and confusing the two would let a payment be signed by the key that gets retired precisely so it cannot sign payments. Each key is verified on-chain the same way the master key is: the AccountID is derived from the key and the classic address re-encoded from it.
+2. **Delegate.** `requestSetup` with `SETUP_KIND_SIGNER_LIST` builds a `SignerListSet` with every bound signer at weight 1 and the treasury's quorum, and asks the enclaves to sign it. Only the machine holding the master key can answer; the rest refuse for want of a key. Weights are all 1 because there is no rule in the policy engine that would decide otherwise, and an unexplained asymmetry in who can spend a treasury is worse than none.
+3. **Lock.** `requestSetup` with `SETUP_KIND_DISABLE_MASTER_KEY` signs an `AccountSet` setting `asfDisableMaster`. Until this lands the signer list is an additional authority rather than the only one, and the machine that created the account could still pay alone. XRPL refuses this step unless an alternative already exists, which is why it is third and not second.
+
+Payments then take a different route through the same state machine. `dispatch` reads the signing mode at dispatch rather than at proposal — a treasury that moved to k-of-n while a request waited out its timelock must pay by quorum — and sends a `MultiSignRequest` to every machine in the set. Each enclave returns one signature and never a transaction, because one machine under k-of-n has authorised nothing.
+
+**The second digest.** The eight policy-bearing fields and their digest are untouched, so the k-of-n path inherits the existing guarantee rather than restating it. The addition is `keccak256(abi.encode(policyDigest, sourceAccountId))`. A machine holding only a signer key does not know which treasury account it is signing for, so that account has to arrive with the instruction — and anything that arrives with an instruction is something a relayer could alter. Without this, a legitimately approved payment could be pointed at a different account's signer list. Its refusal has its own log line, `source account digest mismatch`, because it names a different tampered field than a policy mismatch does.
+
+**Assembly.** `PaymentController` publishes each share as it arrives and moves the request to `Signed` at quorum. It checks that each share's key derives to a bound signer and that no signer contributes twice; it does not check the signature, because that needs secp256k1 over a SHA-512 half and there is no SHA-512 precompile. That is bounded and already the relaying role's cost: a bad share builds a transaction XRPL rejects, the payment is proven absent, and its window spend is released. It cannot move money, because nothing there can — settlement is only ever an FDC proof.
+
+Putting the shares together happens off-chain, in the submitter, and grants no authority. Every share already covers the whole transaction, so an assembler that reorders, drops or forges one produces a blob the ledger rejects rather than a payment nobody approved. Everything it needs is published on-chain, so anyone can assemble and submit — which is the same property that makes the single-key submitter a liveness helper rather than a trust assumption.
