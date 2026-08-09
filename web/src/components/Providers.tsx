@@ -45,8 +45,9 @@ export function Providers({ children }: { children: ReactNode }) {
 function ConfigurationProblems({ problems }: { problems: { variable: string; problem: string }[] }) {
   return (
     <main className="mx-auto max-w-2xl px-6 py-16">
-      <h1 className="text-lg font-semibold text-ink">The dashboard is not configured</h1>
-      <p className="mt-2 text-sm text-muted">
+      <div className="text-2xl font-bold tracking-tight text-ink">AEGIS</div>
+      <h1 className="mt-8 text-3xl font-semibold tracking-tight text-ink">The dashboard is not configured</h1>
+      <p className="mt-3 text-sm text-muted">
         Aegis reads its contract addresses from the environment and has no defaults for them. Copy{" "}
         <code className="numeric text-accent">web/.env.example</code> to{" "}
         <code className="numeric text-accent">web/.env.local</code> and fill in your deployment, or run{" "}
@@ -54,8 +55,8 @@ function ConfigurationProblems({ problems }: { problems: { variable: string; pro
       </p>
       <ul className="mt-6 space-y-2">
         {problems.map((problem) => (
-          <li key={problem.variable} className="rounded-md border border-bad/30 bg-bad/5 px-4 py-3 text-sm">
-            <span className="numeric text-bad">{problem.variable}</span>
+          <li key={problem.variable} className="rounded-lg border border-bad/25 bg-bad-dim/40 px-4 py-3 text-sm">
+            <span className="numeric font-semibold text-bad">{problem.variable}</span>
             <span className="text-muted"> — {problem.problem}</span>
           </li>
         ))}

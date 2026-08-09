@@ -11,7 +11,8 @@ import { shortHex } from "@/lib/format";
  * anything.
  */
 
-const linkClass = "numeric text-info underline decoration-info/30 underline-offset-2 hover:decoration-info";
+const linkClass =
+  "numeric font-medium text-accent underline decoration-accent/30 underline-offset-2 hover:decoration-accent";
 
 export function TxLink({ hash, label }: { hash: string; label?: string }) {
   const config = requireConfig();

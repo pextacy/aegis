@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { TxFeedback } from "@/components/TxFeedback";
-import { Alert, buttonClass, Card, Mono } from "@/components/ui";
+import { Alert, buttonClass, Card, inputClass, Mono } from "@/components/ui";
 import { useAegisTx } from "@/hooks/useAegisTx";
 import { contractHandles, type Treasury } from "@/lib/contracts";
 
@@ -76,11 +76,11 @@ export function StartingSequencePanel({
         <p className="mt-3 text-sm text-faint">Generate and bind the XRPL key first — there is no account yet.</p>
       ) : (
         <div className="mt-4 flex flex-wrap items-end gap-3">
-          <label className="text-sm">
-            <span className="block text-faint">Sequence</span>
+          <label className="block">
+            <span className="text-sm font-medium text-ink">Sequence</span>
             <input
               inputMode="numeric"
-              className="mt-1 w-48 rounded border border-line bg-transparent px-2 py-1 font-mono text-sm"
+              className={`${inputClass} mt-1.5 w-48`}
               placeholder={xrplSequence !== null ? String(xrplSequence) : "from account_info"}
               value={entered}
               onChange={(event) => setEntered(event.target.value.replace(/[^0-9]/g, ""))}

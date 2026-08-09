@@ -63,6 +63,41 @@ export type PaymentRequest = {
   proposer: Address;
   committedUsd: bigint;
   windowIndex: bigint;
+  /** Zero on a treasury that signs with one key; set at dispatch otherwise. */
+  multiSignDigest: Hex;
+  /** How many enclave signatures this payment needs. Zero means one key. */
+  quorumRequired: number;
+};
+
+/**
+ * TreasuryRegistry.SignerSetState.
+ *
+ * The order is the only one XRPL permits: a signer list cannot be installed
+ * before there are keys to put in it, and a master key cannot be retired before
+ * something else can authorise.
+ */
+export const SIGNER_SET_NONE = 0;
+export const SIGNER_SET_COLLECTING = 1;
+export const SIGNER_SET_READY = 2;
+export const SIGNER_SET_INSTALLED = 3;
+export const SIGNER_SET_LOCKED = 4;
+
+/** A treasury's k-of-n arrangement. A zeroed one means single-key signing. */
+export type SignerSet = {
+  quorum: number;
+  signerCount: number;
+  state: number;
+  /** The XRPL transaction that installed the signer list, once recorded. */
+  installTxHash: Hex;
+  /** The XRPL transaction that retired the master key, once recorded. */
+  retireTxHash: Hex;
+};
+
+/** One enclave's share of a k-of-n signature. */
+export type PartialSignature = {
+  signerAccountId: Hex;
+  signerPubKey: Hex;
+  signature: Hex;
 };
 
 /** TreasuryRegistry.AmendmentKind. */

@@ -5,7 +5,7 @@ import { isAddress, type Address } from "viem";
 
 import { AddressLink } from "@/components/links";
 import { TxFeedback } from "@/components/TxFeedback";
-import { Badge, buttonClass, Card, Empty, Field, inputClass } from "@/components/ui";
+import { Badge, buttonClass, Card, checkboxClass, Empty, Field, inputClass } from "@/components/ui";
 import { useGuardians, useRoles } from "@/hooks/useAegis";
 import { useAegisTx } from "@/hooks/useAegisTx";
 import { contractHandles } from "@/lib/contracts";
@@ -45,7 +45,7 @@ export function RolesEditor({ policyId, canEdit }: { policyId: bigint; canEdit: 
       subtitle="One address may hold several. Guardians are also the cosigners the TEE instruction carries."
     >
       <div className="mb-5">
-        <div className="text-xs tracking-wide text-faint uppercase">Guardians</div>
+        <div className="label-caps text-faint">Guardians</div>
         {guardians.isPending ? (
           <p className="mt-1 text-sm text-faint">Reading…</p>
         ) : guardians.data && guardians.data.length > 0 ? (
@@ -82,12 +82,17 @@ export function RolesEditor({ policyId, canEdit }: { policyId: bigint; canEdit: 
             />
           </Field>
 
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {ROLES.map((role) => (
-              <label key={role.key} className="flex items-start gap-3 text-sm">
+              <label
+                key={role.key}
+                className={`flex items-start gap-3 rounded-lg border px-4 py-3 text-sm transition-colors ${
+                  selected.includes(role.bit) ? "border-accent bg-accent-dim" : "border-line bg-surface"
+                }`}
+              >
                 <input
                   type="checkbox"
-                  className="mt-0.5"
+                  className={checkboxClass}
                   checked={selected.includes(role.bit)}
                   onChange={(event) =>
                     setSelected((current_) =>

@@ -6,15 +6,29 @@ import { useAccount } from "wagmi";
 
 import { AmendmentPanel } from "@/components/AmendmentPanel";
 import { AuditLogView } from "@/components/AuditLogView";
+import { CopyButton } from "@/components/CopyButton";
 import { FreezeControl } from "@/components/FreezeControl";
+import { IconPlus, IconShield } from "@/components/icons";
 import { KeygenPanel } from "@/components/KeygenPanel";
 import { XrplAccountLink } from "@/components/links";
 import { RequestList } from "@/components/RequestList";
+import { SignerSetPanel } from "@/components/SignerSetPanel";
 import { StartingSequencePanel } from "@/components/StartingSequencePanel";
-import { Badge, buttonClass, Card, FailureAlert, Loading, Stat } from "@/components/ui";
+import {
+  Badge,
+  Breadcrumb,
+  buttonClass,
+  Card,
+  DarkPanel,
+  FailureAlert,
+  Loading,
+  PageHeader,
+  Stat,
+} from "@/components/ui";
 import { WindowGauge } from "@/components/WindowGauge";
 import { useCommittedUsd, usePolicy, useRequests, useRoles, useTreasury, useXrplAccount } from "@/hooks/useAegis";
-import { formatDrops, formatUsd, formatWindow, formatXrp } from "@/lib/format";
+import type { Policy } from "@/lib/contracts";
+import { formatDrops, formatWindow, formatXrp } from "@/lib/format";
 import { describeRoles, hasRole, ROLE_GUARDIAN, ROLE_POLICY_ADMIN } from "@/lib/roles";
 import { isLive } from "@/lib/states";
 import { bytes32ToClassicAddress } from "@/lib/xrpl-address";
@@ -46,27 +60,53 @@ export default function TreasuryPage() {
   const requestIds = new Set((requests.data ?? []).map((request) => request.id.toString()));
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl font-semibold text-ink">Treasury {data.id.toString()}</h1>
-            {data.frozen ? <Badge tone="bad">Frozen</Badge> : <Badge tone="good">Active</Badge>}
-          </div>
-          <p className="mt-1 text-sm text-muted">
+    <div className="space-y-8">
+      <PageHeader
+        breadcrumb={
+          <Breadcrumb
+            items={[{ label: "Treasuries", href: "/" }, { label: `Treasury ${data.id.toString()}` }]}
+          />
+        }
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            Treasury {data.id.toString()}
+            {data.frozen ? (
+              <Badge tone="bad" dot>
+                Frozen
+              </Badge>
+            ) : (
+              <Badge tone="good" dot>
+                Active
+              </Badge>
+            )}
+          </span>
+        }
+        description={
+          <>
             Governed by{" "}
-            <Link href={`/policies/${data.policyId}`} className="text-accent underline underline-offset-2">
+            <Link href={`/policies/${data.policyId}`} className="font-medium text-accent underline underline-offset-2">
               policy {data.policyId.toString()}
             </Link>
             {address && <> · your roles: {describeRoles(mask)}</>}
-          </p>
-        </div>
-        <Link href={`/treasuries/${data.id}/propose`} className={buttonClass("primary")}>
-          Propose a payment
-        </Link>
-      </header>
+          </>
+        }
+        actions={
+          <Link href={`/treasuries/${data.id}/propose`} className={buttonClass("primary")}>
+            <IconPlus className="size-4" />
+            Propose a payment
+          </Link>
+        }
+      />
 
-      <XrplPanel treasuryAddress={xrplAddress} nextSequence={data.nextSequence} account={xrplAccount} />
+      <div className="grid gap-4 lg:grid-cols-3">
+        <XrplPanel
+          treasuryAddress={xrplAddress}
+          nextSequence={data.nextSequence}
+          sequenceConfirmed={data.sequenceConfirmed}
+          account={xrplAccount}
+        />
+        <GovernancePanel policy={policy.data} policyId={data.policyId} roleMask={mask} connected={Boolean(address)} />
+      </div>
 
       {!xrplAddress && <KeygenPanel treasury={data} canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)} />}
 
@@ -78,14 +118,22 @@ export default function TreasuryPage() {
         />
       )}
 
+      {xrplAddress && (
+        <SignerSetPanel
+          treasury={data}
+          xrplSequence={xrplAccount.data ? xrplAccount.data.sequence : null}
+          canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)}
+        />
+      )}
+
       {policy.data && committed.data !== undefined && (
-        <Card title="Rolling window">
+        <Card>
           <WindowGauge
             committedUsd={committed.data}
             capUsd={policy.data.rollingWindowUsd}
             windowSeconds={policy.data.windowSeconds}
           />
-          <p className="mt-3 text-xs text-faint">
+          <p className="mt-4 border-t border-line pt-4 text-xs text-faint">
             Spend is committed at dispatch, not at proposal, and returned only when a request is proven to have failed.
             Entries older than {formatWindow(policy.data.windowSeconds)} age out on the next call that touches this
             treasury.
@@ -96,11 +144,12 @@ export default function TreasuryPage() {
       <Card
         title="Payments in flight"
         subtitle="Proposed, approved, dispatched or signed — everything that has not reached a terminal outcome."
+        bodyClassName=""
       >
-        <RequestList requests={live} />
+        <RequestList requests={live} emptyMessage="Nothing is in flight from this treasury." searchable />
       </Card>
 
-      <Card title="All payments">
+      <Card title="All payments" bodyClassName="">
         <RequestList requests={requests.data ?? []} />
       </Card>
 
@@ -129,53 +178,123 @@ export default function TreasuryPage() {
 function XrplPanel({
   treasuryAddress,
   nextSequence,
+  sequenceConfirmed,
   account,
 }: {
   treasuryAddress: string | null;
   nextSequence: number;
+  sequenceConfirmed: boolean;
   account: ReturnType<typeof useXrplAccount>;
 }) {
-  return (
-    <Card title="XRPL account">
-      {!treasuryAddress ? (
-        <p className="text-sm text-muted">
-          No XRPL account is bound yet. The key is generated inside the enclave and the registry derives the AccountID
-          from the public key on-chain, so the address below appears only once that binding has been verified.
-        </p>
-      ) : (
-        <div className="grid gap-6 sm:grid-cols-3">
-          <div className="sm:col-span-3">
-            <div className="text-xs tracking-wide text-faint uppercase">Address</div>
-            <div className="mt-1 text-sm break-all">
-              <XrplAccountLink address={treasuryAddress} />
-            </div>
-          </div>
+  const drifted = Boolean(account.data && account.data.sequence !== nextSequence);
 
+  return (
+    <section className="rounded-lg border border-line bg-surface p-6 lg:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="label-caps text-faint">XRPL account</div>
+          {treasuryAddress ? (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="numeric text-xl break-all text-ink">
+                <XrplAccountLink address={treasuryAddress} />
+              </span>
+              <CopyButton value={treasuryAddress} label="Copy the XRPL address" />
+            </div>
+          ) : (
+            <p className="mt-2 max-w-xl text-sm text-muted">
+              No XRPL account is bound yet. The key is generated inside the enclave and the registry derives the
+              AccountID from the public key on-chain, so the address below appears only once that binding has been
+              verified.
+            </p>
+          )}
+        </div>
+        {treasuryAddress &&
+          (account.isPending ? (
+            <Badge tone="neutral">Reading ledger…</Badge>
+          ) : account.data ? (
+            <Badge tone="good" dot>
+              Funded on XRPL
+            </Badge>
+          ) : (
+            <Badge tone="warn" dot>
+              Unfunded
+            </Badge>
+          ))}
+      </div>
+
+      {treasuryAddress && (
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
           <Stat
             label="Balance"
-            value={
-              account.isPending
-                ? "…"
-                : account.data
-                  ? `${formatXrp(account.data.balanceDrops)} XRP`
-                  : "unfunded"
+            value={account.isPending ? "…" : account.data ? `${formatXrp(account.data.balanceDrops)} XRP` : "unfunded"}
+            hint={
+              account.data ? `${formatDrops(account.data.balanceDrops)} drops` : "The ledger has no such account yet."
             }
-            hint={account.data ? `${formatDrops(account.data.balanceDrops)} drops` : "The ledger has no such account."}
           />
           <Stat
             label="Sequence, on Flare"
-            value={nextSequence}
-            hint="What the registry will sign next, advanced only by a proof."
+            value={nextSequence === 0 ? "not recorded" : `#${nextSequence}`}
+            hint={sequenceConfirmed ? "Fixed — XRPL has consumed one." : "Still adjustable until XRPL consumes one."}
           />
           <Stat
             label="Sequence, on XRPL"
-            value={account.data ? account.data.sequence : "—"}
+            value={account.data ? `#${account.data.sequence}` : "—"}
             hint="What the ledger expects next."
-            tone={account.data && account.data.sequence !== nextSequence ? "warn" : "neutral"}
+            tone={drifted ? "warn" : "neutral"}
           />
         </div>
       )}
-    </Card>
+    </section>
+  );
+}
+
+/** What governs this treasury, as the contracts have it. */
+function GovernancePanel({
+  policy,
+  policyId,
+  roleMask,
+  connected,
+}: {
+  policy: Policy | undefined;
+  policyId: bigint;
+  roleMask: number;
+  connected: boolean;
+}) {
+  return (
+    <DarkPanel title="Governance" icon={<IconShield className="size-4" />}>
+      <div className="numeric text-3xl font-medium">Policy {policyId.toString()}</div>
+
+      <dl className="mt-5 space-y-3 text-sm">
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-white/60">Tiers</dt>
+          <dd className="numeric">{policy ? policy.tiers.length : "…"}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-white/60">Allowlist</dt>
+          <dd>{policy ? (policy.allowlistEnforced ? "Enforced" : "Not enforced") : "…"}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-white/60">Amendment threshold</dt>
+          <dd className="numeric">{policy ? policy.amendApprovals : "…"}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-white/60">Amendment timelock</dt>
+          <dd>{policy ? formatWindow(policy.amendTimelock) : "…"}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-5 border-t border-white/15 pt-4 text-sm">
+        <div className="label-caps text-white/60">Your authority</div>
+        <div className="mt-1.5">{connected ? describeRoles(roleMask) : "No wallet connected"}</div>
+      </div>
+
+      <Link
+        href={`/policies/${policyId}`}
+        className="mt-5 inline-flex w-full items-center justify-center rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-navy hover:bg-white/90"
+      >
+        Open the policy
+      </Link>
+    </DarkPanel>
   );
 }
 

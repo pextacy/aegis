@@ -29,7 +29,7 @@ export function ConnectButton() {
         {error && <span className="text-xs text-bad">{error.message}</span>}
         <button
           type="button"
-          className={buttonClass("primary")}
+          className={buttonClass("navy")}
           disabled={isPending || !injectedConnector}
           onClick={() => injectedConnector && connect({ connector: injectedConnector })}
         >

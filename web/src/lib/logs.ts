@@ -122,6 +122,20 @@ function describe(contract: AegisContract, eventName: string, args: Record<strin
       return `Amendment ${args.amendmentId} executed.`;
     case "TreasuryRegistry.SequenceAdvanced":
       return `Treasury ${args.treasuryId} now expects XRPL sequence ${args.nextSequence}.`;
+    case "TreasuryRegistry.SignerSetConfigured":
+      return `Treasury ${args.treasuryId} committed to ${args.quorum}-of-${args.signerCount} signing.`;
+    case "TreasuryRegistry.SignerKeyBound":
+      return `Enclave signer ${args.signerAddress} bound to treasury ${args.treasuryId} (${args.bound} so far).`;
+    case "TreasuryRegistry.SignerSetReady":
+      return `Treasury ${args.treasuryId} collected all ${args.signerCount} signer keys; quorum is ${args.quorum}.`;
+    case "TreasuryRegistry.SignerListInstalled":
+      return `Treasury ${args.treasuryId} handed its XRPL account to its signer set, in transaction ${shortHex(
+        String(args.xrplTxHash),
+      )}.`;
+    case "TreasuryRegistry.MasterKeyRetired":
+      return `Treasury ${args.treasuryId} retired its master key in transaction ${shortHex(
+        String(args.xrplTxHash),
+      )}. The quorum is now the only authority over the account.`;
 
     case "PaymentController.PaymentProposed":
       return `Request ${args.requestId}: ${formatXrp(asBigInt(args.amountDrops) ?? 0n)} XRP to ${destination(
@@ -132,6 +146,10 @@ function describe(contract: AegisContract, eventName: string, args: Record<strin
       return `${shortHex(String(args.approver))} approved request ${args.requestId} (${args.approvals} of ${
         args.required
       }).`;
+    case "PaymentController.PaymentApprovalRevoked":
+      return `${shortHex(String(args.approver))} withdrew their approval of request ${args.requestId} (${
+        args.approvals
+      } of ${args.required} remaining).`;
     case "PaymentController.PaymentReady":
       return `Request ${args.requestId} reached its approval threshold.`;
     case "PaymentController.PaymentDispatched":
@@ -140,6 +158,12 @@ function describe(contract: AegisContract, eventName: string, args: Record<strin
       }–${args.lastLedgerSequence}, fee ${formatDrops(asBigInt(args.feeDrops) ?? 0n)} drops.`;
     case "PaymentController.PaymentSigned":
       return `The enclave returned a signed transaction for request ${args.requestId}.`;
+    case "PaymentController.PaymentPartiallySigned":
+      return `An enclave contributed its share of request ${args.requestId}'s signature (${args.collected} collected).`;
+    case "PaymentController.PaymentMultiSigned":
+      return `Request ${args.requestId} reached its quorum: ${args.collected} of ${args.quorum} enclaves signed.`;
+    case "PaymentController.PartialSignatureIgnored":
+      return `A late share for request ${args.requestId} arrived after its quorum closed and was ignored.`;
     case "PaymentController.PaymentSettled":
       return `Request ${args.requestId} settled on XRPL at sequence ${args.sequence}, confirmed by an FDC proof.`;
     case "PaymentController.PaymentFailed":
@@ -150,6 +174,23 @@ function describe(contract: AegisContract, eventName: string, args: Record<strin
       return `$${formatUsd(
         asBigInt(args.amountUsd) ?? 0n,
       )} returned to treasury ${args.treasuryId}'s rolling window from request ${args.requestId}.`;
+
+    case "AegisInstructionSender.SignerKeygenRequested":
+      return `Asked ${args.machines} enclaves for their signer keys for treasury ${args.treasuryId}.`;
+    case "AegisInstructionSender.SignerKeygenResultSubmitted":
+      return `An enclave returned signer key ${args.signerAddress} for treasury ${args.treasuryId}.`;
+    case "AegisInstructionSender.MultiSignatureRequested":
+      return `Request ${args.requestId} sent to ${args.machines} enclaves for a quorum signature.`;
+    case "AegisInstructionSender.PartialSignatureResultSubmitted":
+      return `Share ${args.answered} relayed for request ${args.requestId}.`;
+    case "AegisInstructionSender.SetupRequested":
+      return `Asked the TEE to sign ${
+        Number(args.kind) === 0 ? "treasury " + args.treasuryId + "'s signer list" : "the retirement of treasury " + args.treasuryId + "'s master key"
+      }.`;
+    case "AegisInstructionSender.SetupTransactionSigned":
+      return `The enclave signed ${
+        Number(args.kind) === 0 ? "the signer list" : "the master key retirement"
+      } for treasury ${args.treasuryId}, XRPL transaction ${shortHex(String(args.txHash))}.`;
 
     case "AegisInstructionSender.KeygenRequested":
       return `Asked the TEE to generate a key for treasury ${args.treasuryId} (instruction ${shortHex(

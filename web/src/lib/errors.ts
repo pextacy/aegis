@@ -53,6 +53,30 @@ function bytes32Text(value: unknown): string {
   }
 }
 
+/** Mirrors `TreasuryRegistry.SignerSetState`, in the words the UI uses. */
+const SIGNER_SET_STATES = [
+  "not configured",
+  "collecting signer keys",
+  "ready to install its signer list",
+  "signing by quorum",
+  "signing by quorum with its master key retired",
+] as const;
+
+function signerSetState(value: unknown): string {
+  const index = Number(value ?? -1);
+  return SIGNER_SET_STATES[index] ?? `in an unrecognised state (${index})`;
+}
+
+/** A signer AccountID, as its XRPL address where that can be derived. */
+function signerLabel(word: unknown): string {
+  const hex = typeof word === "string" ? (word as Hex) : ("0x" as Hex);
+  try {
+    return bytes32ToClassicAddress(hex) ?? shortHex(hex);
+  } catch {
+    return shortHex(hex);
+  }
+}
+
 function destinationLabel(word: unknown, tag: unknown): string {
   const hex = typeof word === "string" ? (word as Hex) : ("0x" as Hex);
   let address: string;
@@ -220,6 +244,106 @@ const EXPLANATIONS: Record<string, Explainer> = {
     rule: "TreasuryRegistry — sequence tracking",
     detail: `The treasury already expects sequence ${bigintAt(args, 0)}; the proof carries ${bigintAt(args, 1)}.`,
   }),
+  SignerSetAlreadyConfigured: (args) => ({
+    title: "Quorum is already set",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail:
+      `Treasury ${bigintAt(args, 0)} has already committed to a quorum, and it is set once. ` +
+      `Changing it means replacing a signer list on XRPL while payments are in flight, and a payment ` +
+      `dispatched to the old set could no longer be signed by the new one.`,
+    remedy: "A different arrangement is a different treasury.",
+  }),
+  SignerSetNotConfigured: (args) => ({
+    title: "No quorum on this treasury",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail: `Treasury ${bigintAt(args, 0)} signs with a single enclave key and has not committed to a quorum.`,
+    remedy: "Configure the signer set first, then collect its keys.",
+  }),
+  WrongSignerSetState: (args) => ({
+    title: "Wrong step in the k-of-n setup",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail:
+      `The signer set is ${signerSetState(args[0])}, and this step needs it to be ${signerSetState(args[1])}. ` +
+      `The order is the only one XRPL permits: collect the keys, install the signer list, then retire the master key.`,
+  }),
+  SignerSetNotInState: (args) => ({
+    title: "Wrong step in the k-of-n setup",
+    rule: "AegisInstructionSender — k-of-n setup",
+    detail:
+      `The signer set is ${signerSetState(args[0])}, and this instruction needs it to be ${signerSetState(args[1])}. ` +
+      `Retiring a master key before the signer list is live would leave an account nothing could ever sign for.`,
+  }),
+  InvalidQuorum: (args) => ({
+    title: "Quorum cannot be met",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail:
+      `A quorum of ${bigintAt(args, 0)} out of ${bigintAt(args, 1)} signers is not usable: zero would authorise ` +
+      `anything, and more than the signer count would authorise nothing.`,
+    remedy: "Choose a quorum between 1 and the number of signers.",
+  }),
+  TooManySigners: (args) => ({
+    title: "More signers than XRPL holds",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail: `XRPL holds at most ${bigintAt(args, 1)} signers on one account; ${bigintAt(args, 0)} were asked for.`,
+  }),
+  DuplicateSignerKey: (args) => ({
+    title: "That enclave is already a signer",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail:
+      `${signerLabel(args[1])} already holds a slot in treasury ${bigintAt(args, 0)}'s signer list. ` +
+      `XRPL counts a signer once, so a duplicate would inflate a quorum the ledger will not honour.`,
+  }),
+  SignerIsTreasuryAccount: (args) => ({
+    title: "A treasury cannot be its own signer",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail:
+      `The key offered for treasury ${bigintAt(args, 0)} derives to the treasury's own XRPL account. ` +
+      `XRPL refuses a signer list containing the account itself, so that signer could never count.`,
+  }),
+  SignerSetComplete: (args) => ({
+    title: "Every signer slot is filled",
+    rule: "TreasuryRegistry — k-of-n signer set",
+    detail: `Treasury ${bigintAt(args, 0)} already has all the signer keys it asked for.`,
+  }),
+  XrplTxHashRequired: () => ({
+    title: "Name the XRPL transaction",
+    rule: "TreasuryRegistry — k-of-n setup record",
+    detail:
+      "A step that happened on XRPL is recorded with the transaction that did it, so the claim can be " +
+      "checked against the ledger rather than taken on trust.",
+    remedy: "Submit the signed setup transaction first, then record its hash.",
+  }),
+  NotATreasurySigner: (args) => ({
+    title: "Not one of this treasury's signers",
+    rule: "PaymentController — k-of-n signature collection",
+    detail:
+      `${signerLabel(args[1])} is not in treasury ${bigintAt(args, 0)}'s signer list, so XRPL would not count ` +
+      `its signature either.`,
+  }),
+  AlreadyPartiallySigned: (args) => ({
+    title: "That enclave has already signed",
+    rule: "PaymentController — k-of-n signature collection",
+    detail:
+      `${signerLabel(args[1])} has already contributed to request ${bigintAt(args, 0)}. ` +
+      `A second share from the same signer would inflate a quorum XRPL will not honour.`,
+  }),
+  NotAQuorumPayment: (args) => ({
+    title: "This payment was not dispatched to a quorum",
+    rule: "PaymentController — k-of-n signature collection",
+    detail: `Request ${bigintAt(args, 0)} was dispatched to a single enclave key, so it collects no shares.`,
+  }),
+  EmptySignature: (args) => ({
+    title: "Empty signature",
+    rule: "PaymentController — k-of-n signature collection",
+    detail: `A share for request ${bigintAt(args, 0)} arrived with no key or no signature, which is not a contribution.`,
+  }),
+  UnknownSetupKind: (args) => ({
+    title: "Unknown setup step",
+    rule: "AegisInstructionSender — k-of-n setup",
+    detail:
+      `Setup kind ${bigintAt(args, 0)} does not exist. There are two: installing the signer list, and ` +
+      `retiring the master key.`,
+  }),
   AccountNotBound: (args) => ({
     title: "No XRPL account yet",
     rule: "TreasuryRegistry — starting sequence",
@@ -367,6 +491,21 @@ const EXPLANATIONS: Record<string, Explainer> = {
     title: "Already approved",
     rule: "PaymentController — one approval per address",
     detail: `${shortHex(stringAt(args, 1))} has already approved request ${bigintAt(args, 0)}.`,
+  }),
+  ApproverEntryMissing: (args) => ({
+    title: "Approval records disagree",
+    rule: "PaymentController — internal consistency",
+    detail: `Request ${bigintAt(args, 0)} records ${shortHex(
+      stringAt(args, 1),
+    )} as an approver in one place and not in the other.`,
+    remedy:
+      "Nothing you did causes this. The contract refuses rather than letting the two records drift apart, which would leave a payment counting an approval nobody holds. Report it with the request id.",
+  }),
+  NotApproved: (args) => ({
+    title: "No approval to withdraw",
+    rule: "PaymentController — an approver withdraws only their own approval",
+    detail: `${shortHex(stringAt(args, 1))} has not approved request ${bigintAt(args, 0)}.`,
+    remedy: "Only the address that gave an approval can take it back. Nobody can strike someone else's.",
   }),
   TimelockNotElapsed: (args) => ({
     title: "Timelock has not elapsed",

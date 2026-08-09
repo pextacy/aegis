@@ -4,12 +4,24 @@ import type { Address, Hex, PublicClient } from "viem";
 import {
   contractHandles,
   wiredHandles,
+  SIGNER_SET_INSTALLED,
+  SIGNER_SET_LOCKED,
   type Amendment,
+  type PartialSignature,
   type PaymentRequest,
   type Policy,
+  type SignerSet,
   type Tier,
   type Treasury,
 } from "./contracts";
+import { hasRole, ROLE_APPROVER } from "./roles";
+
+/** One request's approvals, each marked with whether it still carries authority. */
+export type ApprovalStanding = {
+  entries: { approver: Address; stillHoldsRole: boolean }[];
+  /** What `dispatch` will count. Lower than `entries.length` once a role lapses. */
+  valid: number;
+};
 
 /**
  * Reads of Aegis state, straight from the contracts.
@@ -212,6 +224,64 @@ export async function listTreasuries(client: PublicClient): Promise<Treasury[]> 
   return ids.map((id) => byId.get(id.toString())).filter((t): t is Treasury => t !== undefined);
 }
 
+// --- Signer sets -----------------------------------------------------------
+
+/**
+ * Reads a treasury's k-of-n arrangement.
+ *
+ * A treasury that signs with one enclave key has a zeroed set, which is not an
+ * error — it is the v1 arrangement, and the state is what says so.
+ */
+export async function getSignerSet(client: PublicClient, treasuryId: bigint): Promise<SignerSet> {
+  const { treasuryRegistry } = contractHandles();
+  return (await client.readContract({
+    ...treasuryRegistry,
+    functionName: "getSignerSet",
+    args: [treasuryId],
+  })) as unknown as SignerSet;
+}
+
+/** The enclave signer accounts bound to a treasury, in the order they were bound. */
+export async function signersOf(client: PublicClient, treasuryId: bigint): Promise<readonly Hex[]> {
+  const { treasuryRegistry } = contractHandles();
+  return (await client.readContract({
+    ...treasuryRegistry,
+    functionName: "signersOf",
+    args: [treasuryId],
+  })) as readonly Hex[];
+}
+
+/**
+ * Whether a treasury's payments are authorised by quorum.
+ *
+ * True from the moment the signer list is live, not from the moment the master
+ * key is retired: the list is what XRPL checks a multi-signed transaction
+ * against, and retiring the key removes the alternative, which is a separate and
+ * later fact.
+ */
+export function signsByQuorum(set: SignerSet): boolean {
+  return set.state === SIGNER_SET_INSTALLED || set.state === SIGNER_SET_LOCKED;
+}
+
+/**
+ * The shares collected towards a request's k-of-n signature.
+ *
+ * Published individually so a quorum can be assembled from chain data alone,
+ * with no Aegis service running — which is what makes the assembler powerless
+ * rather than trusted.
+ */
+export async function partialSignaturesOf(
+  client: PublicClient,
+  requestId: bigint,
+): Promise<readonly PartialSignature[]> {
+  const { paymentController } = contractHandles();
+  return (await client.readContract({
+    ...paymentController,
+    functionName: "partialSignaturesOf",
+    args: [requestId],
+  })) as unknown as readonly PartialSignature[];
+}
+
 // --- Amendments ------------------------------------------------------------
 
 /** An amendment together with its id, since the struct does not carry one. */
@@ -280,6 +350,46 @@ export async function hasApproved(client: PublicClient, requestId: bigint, accou
     functionName: "hasApproved",
     args: [requestId, account],
   })) as boolean;
+}
+
+/**
+ * Who has approved a request, and how many of those approvals still carry
+ * authority.
+ *
+ * The two figures come apart when an approver's role is revoked after they
+ * approved: `getRequest().approvals` still counts them, and `dispatch` does not.
+ * Showing only the raw count would tell an operator a payment is ready when the
+ * contract is about to refuse it.
+ */
+export async function approvalStanding(
+  client: PublicClient,
+  requestId: bigint,
+  policyId: bigint,
+): Promise<ApprovalStanding> {
+  const { paymentController } = contractHandles();
+  const [approvers, valid] = await Promise.all([
+    client.readContract({
+      ...paymentController,
+      functionName: "approversOf",
+      args: [requestId],
+    }) as Promise<readonly Address[]>,
+    client.readContract({
+      ...paymentController,
+      functionName: "validApprovals",
+      args: [requestId],
+    }) as Promise<number>,
+  ]);
+
+  // Which approvals lapsed, not just how many. The contract only reports the
+  // count, so the individual standing is re-derived from the same role the
+  // contract reads.
+  const entries = await Promise.all(
+    approvers.map(async (approver) => ({
+      approver,
+      stillHoldsRole: hasRole(await rolesOf(client, policyId, approver), ROLE_APPROVER),
+    })),
+  );
+  return { entries, valid };
 }
 
 /** Whether an address has already approved an amendment. */

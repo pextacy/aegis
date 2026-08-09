@@ -3,12 +3,23 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import type { Hex, PublicClient } from "viem";
 import { useAccount, usePublicClient } from "wagmi";
 
+import { IconArrowRight, IconShield } from "@/components/icons";
 import { TxFeedback } from "@/components/TxFeedback";
-import { Alert, buttonClass, Card, Field, inputClass, Loading, Stat } from "@/components/ui";
+import {
+  Alert,
+  Breadcrumb,
+  buttonClass,
+  Card,
+  CheckRow,
+  Field,
+  inputClass,
+  Loading,
+  PageHeader,
+} from "@/components/ui";
 import { WindowGauge } from "@/components/WindowGauge";
 import {
   useCommittedUsd,
@@ -17,13 +28,14 @@ import {
   useQuoteUsd,
   useRoles,
   useTreasury,
+  useXrplAccount,
 } from "@/hooks/useAegis";
 import { useAegisTx } from "@/hooks/useAegisTx";
 import { contractHandles, type Tier } from "@/lib/contracts";
 import { explainFailure } from "@/lib/errors";
 import { AmountParseError, formatDrops, formatUsd, formatWindow, formatXrp, parseXrpToDrops } from "@/lib/format";
 import { hasRole, ROLE_PROPOSER } from "@/lib/roles";
-import { classicAddressToBytes32, XrplAddressError } from "@/lib/xrpl-address";
+import { bytes32ToClassicAddress, classicAddressToBytes32, XrplAddressError } from "@/lib/xrpl-address";
 
 /**
  * Proposing a payment, checked before it costs anything.
@@ -46,6 +58,12 @@ export default function ProposePage() {
   const publicClient = usePublicClient();
   const tx = useAegisTx();
   const { paymentController } = contractHandles();
+
+  // What the treasury actually holds, so an amount can be judged against it
+  // before the contract is asked. The reserve makes the balance an upper bound
+  // rather than a spendable figure, which is why nothing here fills the field in.
+  const treasuryAddress = treasury.data ? safeAddress(treasury.data.xrplAccountId) : null;
+  const balance = useXrplAccount(treasuryAddress);
 
   const [destination, setDestination] = useState("");
   const [tag, setTag] = useState("0");
@@ -124,233 +142,273 @@ export default function ProposePage() {
   const ready = inputsReady && simulation.isSuccess && !tx.isBusy;
 
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold text-ink">
-          Propose a payment from treasury {treasury.data.id.toString()}
-        </h1>
-        <p className="mt-1 text-sm text-muted">
-          Governed by{" "}
-          <Link href={`/policies/${treasury.data.policyId}`} className="text-accent underline underline-offset-2">
-            policy {treasury.data.policyId.toString()}
-          </Link>
-          . Every rule below is checked now and again at dispatch — the price moves and the window is shared.
-        </p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader
+        breadcrumb={
+          <Breadcrumb
+            items={[
+              { label: "Treasuries", href: "/" },
+              { label: `Treasury ${treasury.data.id.toString()}`, href: `/treasuries/${treasury.data.id}` },
+              { label: "Propose a payment" },
+            ]}
+          />
+        }
+        title="Propose a payment"
+        description={
+          <>
+            Governed by{" "}
+            <Link
+              href={`/policies/${treasury.data.policyId}`}
+              className="font-medium text-accent underline underline-offset-2"
+            >
+              policy {treasury.data.policyId.toString()}
+            </Link>
+            . Every rule on the right is checked now and again at dispatch — the price moves and the window is shared.
+          </>
+        }
+      />
 
-      <Card title="Payment">
-        <div className="grid gap-4 md:grid-cols-[1fr_10rem]">
-          <Field
-            label="Destination"
-            error={destinationError}
-            hint="XRPL classic address. The checksum is verified before anything is sent."
-          >
-            <input
-              className={inputClass}
-              placeholder="r3ymjALibVQ6D7Rdy84NJovACu7TzBJjMX"
-              value={destination}
-              onChange={(event) => setDestination(event.target.value)}
-            />
-          </Field>
-          <Field
-            label="Destination tag"
-            error={tagError}
-            hint={tagValue === 0 ? "Omitted from the transaction." : "Included in the signed transaction."}
-          >
-            <input
-              className={inputClass}
-              inputMode="numeric"
-              value={tag}
-              onChange={(event) => setTag(event.target.value)}
-            />
-          </Field>
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <Card>
+            <Field
+              label="Destination address"
+              error={destinationError}
+              hint="XRPL classic address. The checksum is verified before anything is sent."
+            >
+              <input
+                className={inputClass}
+                placeholder="r3ymjALibVQ6D7Rdy84NJovACu7TzBJjMX"
+                value={destination}
+                onChange={(event) => setDestination(event.target.value)}
+              />
+            </Field>
+
+            <div className="mt-5 grid gap-5 sm:grid-cols-2">
+              <Field
+                label="Destination tag"
+                error={tagError}
+                hint={tagValue === 0 ? "Omitted from the transaction entirely." : "Included in the signed transaction."}
+              >
+                <input
+                  className={inputClass}
+                  inputMode="numeric"
+                  value={tag}
+                  onChange={(event) => setTag(event.target.value)}
+                />
+              </Field>
+
+              <Field label="Asset" hint="A treasury holds XRP. Issued currencies are not in this version.">
+                <div className="flex items-center gap-3 rounded-lg border border-line bg-sunken px-3.5 py-2.5 text-sm">
+                  <span className="flex size-6 items-center justify-center rounded-full bg-navy text-xs font-bold text-white">
+                    X
+                  </span>
+                  <span className="font-medium text-ink">XRP</span>
+                </div>
+              </Field>
+            </div>
+
+            <div className="mt-5">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-sm font-medium text-ink">Amount</span>
+                <span className="numeric text-sm text-muted">
+                  {balance.isPending
+                    ? "reading the ledger…"
+                    : balance.data
+                      ? `Balance: ${formatXrp(balance.data.balanceDrops)} XRP`
+                      : treasuryAddress
+                        ? "Balance: account not funded"
+                        : "Balance: no XRPL account bound"}
+                </span>
+              </div>
+              <div className="mt-1.5">
+                <div className="rounded-lg border border-line bg-raised px-4 py-4 focus-within:border-accent focus-within:bg-surface">
+                  <div className="flex items-baseline gap-3">
+                    <input
+                      className="numeric w-full bg-transparent text-3xl text-ink outline-none placeholder:text-line-strong"
+                      inputMode="decimal"
+                      placeholder="0.000000"
+                      value={amountXrp}
+                      onChange={(event) => setAmountXrp(event.target.value)}
+                    />
+                    <span className="text-xl font-semibold text-muted">XRP</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                    <span className="numeric text-faint">
+                      {amountDrops === null ? "— drops" : `${formatDrops(amountDrops)} drops`}
+                    </span>
+                    <span className={`numeric ${quote.error ? "text-bad" : "text-muted"}`}>
+                      {quote.isPending && amountDrops !== null
+                        ? "pricing…"
+                        : quote.error
+                          ? explainFailure(quote.error).title
+                          : quote.data !== undefined
+                            ? `≈ $${formatUsd(quote.data)} at the live FTSO price`
+                            : "≈ $0.00"}
+                    </span>
+                  </div>
+                </div>
+                {amountError ? (
+                  <p className="mt-1.5 text-xs text-bad">{amountError}</p>
+                ) : (
+                  <p className="mt-1.5 text-xs text-faint">
+                    Six decimal places. One drop is the smallest unit XRPL can move, and the ledger holds back a base
+                    reserve, so the whole balance is never spendable.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {tier && quote.data !== undefined && (
+              <div className="mt-5">
+                <Alert tone="info" title="If this is proposed">
+                  It will need <strong>{tier.requiredApprovals}</strong> approval(s) from addresses other than yours,
+                  and become dispatchable{" "}
+                  {tier.timelockSeconds === 0 ? "immediately after" : `${formatWindow(tier.timelockSeconds)} after`} it
+                  is proposed. The amount is {formatXrp(amountDrops ?? 0n)} XRP, worth ${formatUsd(quote.data)} right
+                  now — and it will be re-priced at dispatch.
+                </Alert>
+              </div>
+            )}
+
+            <div className="mt-6 border-t border-line pt-6">
+              <button
+                type="button"
+                className={`${buttonClass("primary")} w-full py-3.5 text-base`}
+                disabled={!ready}
+                onClick={async () => {
+                  if (accountId === null || tagValue === null || amountDrops === null) return;
+                  const proposed = await tx.run({
+                    address: paymentController.address,
+                    abi: paymentController.abi,
+                    functionName: "propose",
+                    args: [treasuryId, accountId, tagValue, amountDrops],
+                  });
+                  if (proposed) router.push(`/treasuries/${treasuryId}`);
+                }}
+              >
+                {tx.isBusy ? "Working…" : "Propose payment"}
+                <IconArrowRight className="size-4" />
+              </button>
+              {!ready && inputsReady && (
+                <p className="mt-3 text-center text-xs text-faint">Every line in the policy check must pass first.</p>
+              )}
+              <TxFeedback state={tx.state} doneMessage="Payment proposed" />
+            </div>
+          </Card>
         </div>
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <Field label="Amount (XRP)" error={amountError} hint="Six decimal places. One drop is the smallest unit.">
-            <input
-              className={inputClass}
-              inputMode="decimal"
-              placeholder="100.000000"
-              value={amountXrp}
-              onChange={(event) => setAmountXrp(event.target.value)}
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-4 md:pt-6">
-            <Stat label="In drops" value={amountDrops === null ? "—" : formatDrops(amountDrops)} />
-            <Stat
-              label="At the live FTSO price"
-              value={
-                quote.isPending && amountDrops !== null
-                  ? "…"
-                  : quote.data !== undefined
-                    ? `$${formatUsd(quote.data)}`
-                    : "—"
-              }
-              hint={quote.error ? explainFailure(quote.error).title : undefined}
-              tone={quote.error ? "bad" : "neutral"}
-            />
-          </div>
+        <div className="space-y-4">
+          <section className="rounded-lg border border-line bg-raised p-5">
+            <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight text-ink">
+              <IconShield className="size-5 text-accent" />
+              Policy check
+            </h2>
+            <p className="mt-1 text-xs text-faint">
+              Read from the chain as you type. The last line is the contract itself, simulated.
+            </p>
+
+            <div className="mt-4 space-y-2.5">
+              <CheckRow
+                state={canPropose ? "pass" : address ? "fail" : "pending"}
+                title="You hold PROPOSER on this policy"
+              >
+                {address
+                  ? canPropose
+                    ? undefined
+                    : "Only an address with the PROPOSER role may propose a payment."
+                  : "Connect a wallet to check."}
+              </CheckRow>
+
+              <CheckRow state={treasury.data.frozen ? "fail" : "pass"} title="The treasury is not frozen">
+                {treasury.data.frozen
+                  ? "A guardian froze it. Propose, approve and dispatch are all refused."
+                  : undefined}
+              </CheckRow>
+
+              <CheckRow
+                state={accountId === null ? "pending" : "pass"}
+                title="The destination address is well formed"
+              >
+                {destinationError ?? undefined}
+              </CheckRow>
+
+              <CheckRow
+                state={
+                  !inputsReady || allowed.data === undefined ? "pending" : allowed.data ? "pass" : "fail"
+                }
+                title={
+                  policy.data.allowlistEnforced
+                    ? "The destination is allowlisted"
+                    : "The policy does not enforce an allowlist"
+                }
+              >
+                {allowed.data === false
+                  ? "A policy administrator can add this account, either for one tag or for any tag."
+                  : undefined}
+              </CheckRow>
+
+              <CheckRow
+                state={quote.error ? "fail" : quote.data === undefined ? "pending" : "pass"}
+                title="The XRP price is fresh enough to value the payment"
+              >
+                {quote.error
+                  ? explainFailure(quote.error).detail
+                  : "The feed must be under 180 seconds old. There is no cached fallback."}
+              </CheckRow>
+
+              <CheckRow
+                state={overCap ? "fail" : tier ? "pass" : "pending"}
+                title="The amount is inside the policy's hard cap"
+              >
+                {overCap
+                  ? `No tier covers $${formatUsd(quote.data ?? 0n)}. The highest ceiling is $${formatUsd(
+                      policy.data.tiers[policy.data.tiers.length - 1]?.maxAmountUsd ?? 0n,
+                    )}.`
+                  : tier
+                    ? `Tier ceiling $${formatUsd(tier.maxAmountUsd)} — ${tier.requiredApprovals} approval(s), ${
+                        tier.timelockSeconds === 0 ? "no timelock" : formatWindow(tier.timelockSeconds)
+                      }.`
+                    : undefined}
+              </CheckRow>
+
+              <CheckRow
+                state={windowFits === undefined ? "pending" : windowFits ? "pass" : "fail"}
+                title="It fits inside the rolling window"
+              >
+                {windowFits === false
+                  ? "The window is already committed. Wait for earlier spend to age out, or split the payment."
+                  : undefined}
+              </CheckRow>
+
+              <CheckRow
+                state={
+                  !inputsReady || !address || simulation.isPending
+                    ? "pending"
+                    : simulation.isSuccess
+                      ? "pass"
+                      : "fail"
+                }
+                title="The contract accepts this proposal"
+              >
+                {simulation.error ? explainFailure(simulation.error).detail : undefined}
+              </CheckRow>
+            </div>
+          </section>
+
+          {committed.data !== undefined && (
+            <Card>
+              <WindowGauge
+                committedUsd={committed.data}
+                capUsd={policy.data.rollingWindowUsd}
+                windowSeconds={policy.data.windowSeconds}
+                pendingUsd={quote.data ?? 0n}
+              />
+            </Card>
+          )}
         </div>
-      </Card>
-
-      <Card
-        title="What the contract will check"
-        subtitle="Read from the chain as you type. The last line is the contract itself, simulated."
-      >
-        <ul className="space-y-2">
-          <Check
-            state={canPropose ? "pass" : address ? "fail" : "unknown"}
-            label="You hold PROPOSER on this policy"
-            detail={
-              address
-                ? canPropose
-                  ? undefined
-                  : "Only an address with the PROPOSER role may propose a payment."
-                : "Connect a wallet to check."
-            }
-          />
-          <Check
-            state={treasury.data.frozen ? "fail" : "pass"}
-            label="The treasury is not frozen"
-            detail={treasury.data.frozen ? "A guardian froze it. Propose, approve and dispatch are all refused." : undefined}
-          />
-          <Check
-            state={accountId === null ? "unknown" : "pass"}
-            label="The destination address is well formed"
-            detail={destinationError ?? undefined}
-          />
-          <Check
-            state={
-              !inputsReady
-                ? "unknown"
-                : allowed.data === undefined
-                  ? "unknown"
-                  : allowed.data
-                    ? "pass"
-                    : "fail"
-            }
-            label={
-              policy.data.allowlistEnforced
-                ? "The destination is allowlisted"
-                : "The policy does not enforce an allowlist"
-            }
-            detail={
-              allowed.data === false
-                ? "A policy administrator can add this account, either for one tag or for any tag."
-                : undefined
-            }
-          />
-          <Check
-            state={quote.error ? "fail" : quote.data === undefined ? "unknown" : "pass"}
-            label="The XRP price is fresh enough to value the payment"
-            detail={
-              quote.error
-                ? explainFailure(quote.error).detail
-                : "The feed must be under 180 seconds old. There is no cached fallback."
-            }
-          />
-          <Check
-            state={overCap ? "fail" : tier ? "pass" : "unknown"}
-            label="The amount is inside the policy's hard cap"
-            detail={
-              overCap
-                ? `No tier covers $${formatUsd(quote.data ?? 0n)}. The highest ceiling is $${formatUsd(
-                    policy.data.tiers[policy.data.tiers.length - 1]?.maxAmountUsd ?? 0n,
-                  )}.`
-                : tier
-                  ? `Tier ceiling $${formatUsd(tier.maxAmountUsd)} — ${tier.requiredApprovals} approval(s), ${
-                      tier.timelockSeconds === 0 ? "no timelock" : formatWindow(tier.timelockSeconds)
-                    }.`
-                  : undefined
-            }
-          />
-          <Check
-            state={windowFits === undefined ? "unknown" : windowFits ? "pass" : "fail"}
-            label="It fits inside the rolling window"
-            detail={
-              windowFits === false
-                ? "The window is already committed. Wait for earlier spend to age out, or split the payment."
-                : undefined
-            }
-          />
-          <Check
-            state={
-              !inputsReady || !address
-                ? "unknown"
-                : simulation.isPending
-                  ? "unknown"
-                  : simulation.isSuccess
-                    ? "pass"
-                    : "fail"
-            }
-            label="The contract accepts this proposal"
-            detail={simulation.error ? explainFailure(simulation.error).detail : undefined}
-          />
-        </ul>
-
-        {committed.data !== undefined && (
-          <div className="mt-6">
-            <WindowGauge
-              committedUsd={committed.data}
-              capUsd={policy.data.rollingWindowUsd}
-              windowSeconds={policy.data.windowSeconds}
-              pendingUsd={quote.data ?? 0n}
-            />
-          </div>
-        )}
-      </Card>
-
-      {tier && quote.data !== undefined && (
-        <Alert tone="info" title="If this is proposed">
-          It will need <strong>{tier.requiredApprovals}</strong> approval(s) from addresses other than yours, and
-          become dispatchable{" "}
-          {tier.timelockSeconds === 0 ? "immediately after" : `${formatWindow(tier.timelockSeconds)} after`} it is
-          proposed. The amount is {formatXrp(amountDrops ?? 0n)} XRP, worth ${formatUsd(quote.data)} right now — and it
-          will be re-priced at dispatch.
-        </Alert>
-      )}
-
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          className={buttonClass("primary")}
-          disabled={!ready}
-          onClick={async () => {
-            if (accountId === null || tagValue === null || amountDrops === null) return;
-            const proposed = await tx.run({
-              address: paymentController.address,
-              abi: paymentController.abi,
-              functionName: "propose",
-              args: [treasuryId, accountId, tagValue, amountDrops],
-            });
-            if (proposed) router.push(`/treasuries/${treasuryId}`);
-          }}
-        >
-          {tx.isBusy ? "Working…" : "Propose payment"}
-        </button>
-        {!ready && inputsReady && <span className="text-xs text-faint">Every line above must pass first.</span>}
       </div>
-
-      <TxFeedback state={tx.state} doneMessage="Payment proposed" />
     </div>
-  );
-}
-
-type CheckState = "pass" | "fail" | "unknown";
-
-function Check({ state, label, detail }: { state: CheckState; label: ReactNode; detail?: ReactNode }) {
-  const mark = state === "pass" ? "✓" : state === "fail" ? "✕" : "·";
-  const colour = state === "pass" ? "text-good" : state === "fail" ? "text-bad" : "text-faint";
-
-  return (
-    <li className="flex gap-3 text-sm">
-      <span className={`numeric w-4 shrink-0 ${colour}`}>{mark}</span>
-      <span>
-        <span className={state === "fail" ? "text-ink" : "text-muted"}>{label}</span>
-        {detail && <span className="mt-0.5 block text-xs text-faint">{detail}</span>}
-      </span>
-    </li>
   );
 }
 
@@ -366,4 +424,12 @@ function parseId(raw: string | string[] | undefined): bigint | undefined {
   const text = Array.isArray(raw) ? raw[0] : raw;
   if (!text || !/^\d+$/.test(text)) return undefined;
   return BigInt(text);
+}
+
+function safeAddress(word: string): string | null {
+  try {
+    return bytes32ToClassicAddress(word as `0x${string}`);
+  } catch {
+    return null;
+  }
 }

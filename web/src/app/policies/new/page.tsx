@@ -4,8 +4,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { DurationInput, durationSeconds, type Duration } from "@/components/DurationInput";
+import { IconPlus, IconTrash } from "@/components/icons";
 import { TxFeedback } from "@/components/TxFeedback";
-import { Alert, buttonClass, Card, Field, inputClass } from "@/components/ui";
+import { Alert, Breadcrumb, buttonClass, Card, Field, inputClass, PageHeader } from "@/components/ui";
 import { useAegisTx } from "@/hooks/useAegisTx";
 import { contractHandles } from "@/lib/contracts";
 import { AmountParseError, formatUsd, formatWindow, parseUsdToWad } from "@/lib/format";
@@ -73,43 +74,52 @@ export default function NewPolicyPage() {
     setTiers((current) => current.map((tier, i) => (i === index ? { ...tier, ...patch } : tier)));
   }
 
+  function discardDraft() {
+    setTiers([{ ...EMPTY_TIER }]);
+    setRollingWindowUsd("");
+    setWindowLength({ amount: "24", unit: "hours" });
+    setAllowlistEnforced(true);
+    setAmendApprovals("2");
+    setAmendTimelock({ amount: "24", unit: "hours" });
+    tx.reset();
+  }
+
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold text-ink">New policy</h1>
-        <p className="mt-1 text-sm text-muted">
-          A policy is immutable once created. Changing a rule means creating a new policy and repointing the treasury,
-          which takes the current policy&apos;s amendment threshold and timelock — so the numbers below are worth
-          getting right.
-        </p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader
+        breadcrumb={<Breadcrumb items={[{ label: "Policies", href: "/policies" }, { label: "Create new policy" }]} />}
+        title="Policy configuration"
+        description="A policy is immutable once created. Changing a rule means creating a new policy and repointing the treasury, which takes the current policy's amendment threshold and timelock — so the numbers below are worth getting right."
+      />
 
       <Card
-        title="Amount tiers"
+        title="Spending tiers"
         subtitle="Ascending ceilings in USD. A payment takes the lowest tier that covers it; the highest ceiling is the hard per-payment cap."
         actions={
           <button
             type="button"
-            className={buttonClass("secondary")}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:text-accent-strong disabled:opacity-40"
             disabled={tiers.length >= MAX_TIERS}
             onClick={() => setTiers((current) => [...current, { ...EMPTY_TIER }])}
           >
+            <IconPlus className="size-4" />
             Add tier
           </button>
         }
       >
         <div className="space-y-4">
           {tiers.map((tier, index) => (
-            <div key={index} className="rounded-md border border-line bg-raised p-4">
+            <div key={index} className="rounded-lg border border-line bg-raised p-5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium tracking-wide text-faint uppercase">Tier {index + 1}</span>
+                <span className="label-caps text-faint">Tier {index + 1}</span>
                 {tiers.length > 1 && (
                   <button
                     type="button"
-                    className={buttonClass("ghost")}
+                    aria-label={`Remove tier ${index + 1}`}
+                    className="flex size-8 items-center justify-center rounded-lg text-faint hover:bg-bad-dim hover:text-bad"
                     onClick={() => setTiers((current) => current.filter((_, i) => i !== index))}
                   >
-                    Remove
+                    <IconTrash className="size-4" />
                   </button>
                 )}
               </div>
@@ -145,40 +155,60 @@ export default function NewPolicyPage() {
         </div>
       </Card>
 
-      <Card title="Rolling window" subtitle="Total USD that may be committed inside one window, across every payment.">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Window budget (USD)" error={validation.fieldErrors.rollingWindowUsd}>
-            <input
-              className={inputClass}
-              inputMode="decimal"
-              placeholder="50000"
-              value={rollingWindowUsd}
-              onChange={(event) => setRollingWindowUsd(event.target.value)}
-            />
-          </Field>
-          <Field label="Window length" error={validation.fieldErrors.windowSeconds}>
-            <DurationInput value={windowLength} onChange={setWindowLength} />
-          </Field>
-        </div>
-      </Card>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card
+          title="Rolling window"
+          subtitle="Total USD that may be committed inside one window, across every payment."
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Window budget (USD)" error={validation.fieldErrors.rollingWindowUsd}>
+              <input
+                className={inputClass}
+                inputMode="decimal"
+                placeholder="50000"
+                value={rollingWindowUsd}
+                onChange={(event) => setRollingWindowUsd(event.target.value)}
+              />
+            </Field>
+            <Field label="Window length" error={validation.fieldErrors.windowSeconds}>
+              <DurationInput value={windowLength} onChange={setWindowLength} />
+            </Field>
+          </div>
+        </Card>
 
-      <Card title="Destinations" subtitle="Whether payments may only go to allowlisted XRPL accounts.">
-        <label className="flex items-start gap-3 text-sm">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={allowlistEnforced}
-            onChange={(event) => setAllowlistEnforced(event.target.checked)}
-          />
-          <span>
-            <span className="text-ink">Enforce the destination allowlist</span>
-            <span className="mt-1 block text-xs text-faint">
-              With this off, any XRPL account may be paid as long as the amount rules pass. A policy administrator can
-              edit the allowlist afterwards; the rules themselves cannot change.
-            </span>
-          </span>
-        </label>
-      </Card>
+        <Card title="Allowlist control" subtitle="Whether payments may only go to allowlisted XRPL accounts.">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-sm font-semibold text-ink">Restrict destinations</div>
+              <p className="mt-1 max-w-sm text-xs text-faint">
+                With this off, any XRPL account may be paid as long as the amount rules pass. A policy administrator can
+                edit the allowlist afterwards; the rules themselves cannot change.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={allowlistEnforced}
+              aria-label="Enforce the destination allowlist"
+              onClick={() => setAllowlistEnforced((current) => !current)}
+              className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${
+                allowlistEnforced ? "bg-accent" : "bg-line-strong"
+              }`}
+            >
+              <span
+                className={`absolute top-1 size-5 rounded-full bg-white transition-all ${
+                  allowlistEnforced ? "left-6" : "left-1"
+                }`}
+              />
+            </button>
+          </div>
+          <p className="mt-4 rounded-lg bg-raised px-4 py-3 text-xs text-muted">
+            {allowlistEnforced
+              ? "Every destination must be added to the allowlist before it can be paid. Tag 0 permits any tag on that account."
+              : "Any well-formed XRPL destination will pass the allowlist check."}
+          </p>
+        </Card>
+      </div>
 
       <Card
         title="Amendments"
@@ -217,7 +247,13 @@ export default function NewPolicyPage() {
         </Alert>
       )}
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line pt-6">
+        {validation.parsed === null && (
+          <span className="mr-auto text-xs text-faint">Fix the fields above before the policy can be created.</span>
+        )}
+        <button type="button" className={buttonClass("ghost")} disabled={tx.isBusy} onClick={discardDraft}>
+          Discard draft
+        </button>
         <button
           type="button"
           className={buttonClass("primary")}
@@ -243,9 +279,6 @@ export default function NewPolicyPage() {
         >
           {tx.isBusy ? "Working…" : "Create policy"}
         </button>
-        {validation.parsed === null && (
-          <span className="text-xs text-faint">Fix the fields above before the policy can be created.</span>
-        )}
       </div>
 
       <TxFeedback state={tx.state} doneMessage="Policy created" />

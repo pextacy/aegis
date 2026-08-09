@@ -1,13 +1,13 @@
 "use client";
 
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useQueries, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { Address, Hex, PublicClient } from "viem";
 import { usePublicClient } from "wagmi";
 
 import * as chain from "@/lib/chain-data";
 import { requireConfig } from "@/lib/config";
-import type { Policy, Treasury } from "@/lib/contracts";
+import type { PartialSignature, Policy, SignerSet, Treasury } from "@/lib/contracts";
 import { scanAuditLog, type AuditScan } from "@/lib/logs";
 import { fetchAccount, fetchCurrentLedger, fetchFees, type XrplAccount, type XrplFees } from "@/lib/xrpl-client";
 
@@ -88,6 +88,36 @@ export function useRequest(requestId: bigint | undefined): UseQueryResult<chain.
   });
 }
 
+export function useSignerSet(treasuryId: bigint | undefined): UseQueryResult<SignerSet> {
+  const client = useClient();
+  return useQuery({
+    queryKey: ["signerSet", treasuryId?.toString()],
+    enabled: Boolean(client) && treasuryId !== undefined,
+    refetchInterval: FAST,
+    queryFn: async () => chain.getSignerSet(client as PublicClient, treasuryId as bigint),
+  });
+}
+
+export function useSigners(treasuryId: bigint | undefined): UseQueryResult<readonly Hex[]> {
+  const client = useClient();
+  return useQuery({
+    queryKey: ["signers", treasuryId?.toString()],
+    enabled: Boolean(client) && treasuryId !== undefined,
+    refetchInterval: FAST,
+    queryFn: async () => chain.signersOf(client as PublicClient, treasuryId as bigint),
+  });
+}
+
+export function usePartialSignatures(requestId: bigint | undefined): UseQueryResult<readonly PartialSignature[]> {
+  const client = useClient();
+  return useQuery({
+    queryKey: ["partialSignatures", requestId?.toString()],
+    enabled: Boolean(client) && requestId !== undefined,
+    refetchInterval: FAST,
+    queryFn: async () => chain.partialSignaturesOf(client as PublicClient, requestId as bigint),
+  });
+}
+
 export function useAmendments(treasuryId?: bigint): UseQueryResult<chain.IdentifiedAmendment[]> {
   const client = useClient();
   return useQuery({
@@ -153,6 +183,19 @@ export function useHasApproved(
     enabled: Boolean(client) && requestId !== undefined && Boolean(account),
     refetchInterval: FAST,
     queryFn: async () => chain.hasApproved(client as PublicClient, requestId as bigint, account as Address),
+  });
+}
+
+export function useApprovalStanding(
+  requestId: bigint | undefined,
+  policyId: bigint | undefined,
+): UseQueryResult<chain.ApprovalStanding> {
+  const client = useClient();
+  return useQuery({
+    queryKey: ["approvalStanding", requestId?.toString(), policyId?.toString()],
+    enabled: Boolean(client) && requestId !== undefined && policyId !== undefined,
+    refetchInterval: FAST,
+    queryFn: async () => chain.approvalStanding(client as PublicClient, requestId as bigint, policyId as bigint),
   });
 }
 
@@ -280,6 +323,25 @@ export function useXrplAccount(address: string | null | undefined): UseQueryResu
     enabled: Boolean(address),
     refetchInterval: SLOW,
     queryFn: async () => fetchAccount(config.xrplRpcUrl, address as string),
+  });
+}
+
+/**
+ * Several XRPL accounts at once, for a figure that spans treasuries.
+ *
+ * The query keys are the ones {@link useXrplAccount} uses, so a row that shows
+ * one balance and a total that includes it share a single request rather than
+ * asking the ledger the same question twice.
+ */
+export function useXrplAccounts(addresses: (string | null)[]): UseQueryResult<XrplAccount | null>[] {
+  const config = requireConfig();
+  return useQueries({
+    queries: addresses.map((address) => ({
+      queryKey: ["xrplAccount", address],
+      enabled: Boolean(address),
+      refetchInterval: SLOW,
+      queryFn: async () => fetchAccount(config.xrplRpcUrl, address as string),
+    })),
   });
 }
 
