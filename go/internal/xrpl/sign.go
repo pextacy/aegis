@@ -17,10 +17,10 @@ var (
 	// prefixTransactionID is "TXN\0" — the hash of a completed transaction.
 	prefixTransactionID = [4]byte{0x54, 0x58, 0x4E, 0x00}
 
-	// prefixMultiSign is "SMT\0". Multi-signing appends the signer's AccountID
-	// to the payload; it belongs to the k-of-n work in phase 6 and is defined
-	// here so the constant lives with the others rather than being rediscovered.
-	prefixMultiSign = [4]byte{0x53, 0x4D, 0x54, 0x00} //nolint:unused // phase 6
+	// prefixMultiSign is "SMT\0" — the hash each of n signers signs. The payload
+	// carries the signer's AccountID after the transaction, so a signature
+	// collected for one signer cannot be replayed as another's.
+	prefixMultiSign = [4]byte{0x53, 0x4D, 0x54, 0x00}
 )
 
 // Hash is a 32-byte SHA-512Half digest.

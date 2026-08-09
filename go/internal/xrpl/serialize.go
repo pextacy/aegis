@@ -43,6 +43,41 @@ type Payment struct {
 	SigningPubKey []byte
 	TxnSignature  []byte
 	Memos         []Memo
+
+	// Signers carries the k-of-n signatures of a multi-signed transaction. It is
+	// empty for the single-signed path, and when it is populated SigningPubKey
+	// is serialised as the empty blob — that emptiness is what tells XRPL to
+	// authorise the transaction against the account's SignerList rather than
+	// against its master key.
+	Signers []Signer
+}
+
+// txForm selects which of the signature-carrying fields a serialisation
+// includes. The field set is otherwise identical in all four, which is why the
+// forms are a parameter rather than four separate functions that could drift.
+type txForm uint8
+
+const (
+	// formForSigning is what a single signer hashes: SigningPubKey present,
+	// TxnSignature absent.
+	formForSigning txForm = iota
+
+	// formSigned is a complete single-signed transaction.
+	formSigned
+
+	// formForMultiSigning is what each of n signers hashes. SigningPubKey is the
+	// empty blob and no signature appears, so every signer hashes identical
+	// bytes and only the AccountID appended after them differs.
+	formForMultiSigning
+
+	// formMultiSigned is a complete multi-signed transaction: empty
+	// SigningPubKey, no TxnSignature, and the Signers array.
+	formMultiSigned
+)
+
+// multiSigned reports whether the form authorises against a SignerList.
+func (f txForm) multiSigned() bool {
+	return f == formForMultiSigning || f == formMultiSigned
 }
 
 var (
@@ -63,6 +98,15 @@ var (
 
 // Validate checks the invariants that must hold before anything is signed.
 func (p *Payment) Validate() error {
+	return p.validate(false)
+}
+
+// validate checks the invariants for one signing mode.
+//
+// A multi-signed transaction carries no SigningPubKey of its own — the empty
+// blob is what selects the SignerList — so that requirement is dropped there
+// and nowhere else.
+func (p *Payment) validate(multi bool) error {
 	if p.LastLedgerSequence == 0 {
 		return ErrNoLastLedgerSequence
 	}
@@ -72,7 +116,7 @@ func (p *Payment) Validate() error {
 	if p.FeeDrops == 0 {
 		return ErrNoFee
 	}
-	if len(p.SigningPubKey) == 0 {
+	if !multi && len(p.SigningPubKey) == 0 {
 		return ErrNoSigningPubKey
 	}
 	return nil
@@ -84,6 +128,14 @@ func (p *Payment) Validate() error {
 // the form that gets hashed and signed. Every other field, including
 // SigningPubKey, is present in both forms.
 func (p *Payment) Serialize(includeSignature bool) ([]byte, error) {
+	if includeSignature {
+		return p.serialize(formSigned)
+	}
+	return p.serialize(formForSigning)
+}
+
+// serialize builds the canonical binary form for one signing mode.
+func (p *Payment) serialize(form txForm) ([]byte, error) {
 	fields := []field{
 		uint16Field(fieldTransactionType, txTypePayment),
 		uint32Field(fieldSequence, p.Sequence),
@@ -107,13 +159,21 @@ func (p *Payment) Serialize(includeSignature bool) ([]byte, error) {
 	}
 	fields = append(fields, amount, fee)
 
-	pubKey, err := blobField(typeBlob, fieldSigningPubKey, p.SigningPubKey)
+	// A multi-signed transaction still carries SigningPubKey, as the empty blob.
+	// Omitting the field entirely is a different serialisation and a different
+	// hash, and XRPL reads the emptiness — not the absence — as "authorise this
+	// against the SignerList".
+	signingKey := p.SigningPubKey
+	if form.multiSigned() {
+		signingKey = nil
+	}
+	pubKey, err := blobField(typeBlob, fieldSigningPubKey, signingKey)
 	if err != nil {
 		return nil, err
 	}
 	fields = append(fields, pubKey)
 
-	if includeSignature {
+	if form == formSigned {
 		sig, err := blobField(typeBlob, fieldTxnSignature, p.TxnSignature)
 		if err != nil {
 			return nil, err
@@ -137,6 +197,14 @@ func (p *Payment) Serialize(includeSignature bool) ([]byte, error) {
 			return nil, err
 		}
 		fields = append(fields, memos)
+	}
+
+	if form == formMultiSigned {
+		signers, err := serializeSigners(p.Signers)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, signers)
 	}
 
 	// Sorting here rather than relying on the order above is the point: the

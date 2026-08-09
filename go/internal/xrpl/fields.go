@@ -26,10 +26,13 @@ const (
 // Field codes within each type.
 const (
 	fieldTransactionType    = 2  // UInt16
+	fieldSignerWeight       = 3  // UInt16
 	fieldFlags              = 2  // UInt32
 	fieldSequence           = 4  // UInt32
 	fieldDestinationTag     = 14 // UInt32
 	fieldLastLedgerSequence = 27 // UInt32
+	fieldSetFlag            = 33 // UInt32
+	fieldSignerQuorum       = 35 // UInt32
 	fieldAmount             = 1  // Amount
 	fieldFee                = 8  // Amount
 	fieldSigningPubKey      = 3  // Blob
@@ -39,14 +42,22 @@ const (
 	fieldMemoFormat         = 14 // Blob
 	fieldAccount            = 1  // AccountID
 	fieldDestination        = 3  // AccountID
-	fieldMemos              = 9  // STArray
+	fieldSignerEntry        = 11 // STObject
 	fieldMemo               = 10 // STObject
+	fieldSigner             = 16 // STObject
+	fieldSigners            = 3  // STArray
+	fieldSignerEntries      = 4  // STArray
+	fieldMemos              = 9  // STArray
 	fieldObjectEndMarker    = 1  // STObject
 	fieldArrayEndMarker     = 1  // STArray
 )
 
-// txTypePayment is the TransactionType value for a Payment.
-const txTypePayment = 0
+// TransactionType values.
+const (
+	txTypePayment       = 0
+	txTypeAccountSet    = 3
+	txTypeSignerListSet = 12
+)
 
 // TfFullyCanonicalSig must be set in Flags on every transaction this package
 // produces. It forbids the malleable form of a signature.
