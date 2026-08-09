@@ -40,16 +40,27 @@ var (
 
 // keystore holds treasury keys in process memory, guarded by a mutex.
 //
-// Nothing is written to disk. A restart loses the keys, which is the stated v1
-// limitation: one machine holds the key, and the k-of-n design that removes it
-// is phase 6.
+// Nothing is written to disk. A restart loses this machine's keys — which under
+// k-of-n costs a treasury one signature out of n rather than the treasury, and
+// under single-signing costs it everything. That difference is the whole reason
+// the signer keys exist.
+//
+// Master keys and signer keys are held in separate maps rather than one map with
+// a role field. A machine can legitimately hold both for the same treasury: it
+// generated the account and it is also one of the n signers. Keeping them apart
+// means a lookup for one can never return the other, so "sign this payment"
+// cannot reach the key that was retired precisely so it could not sign payments.
 type keystore struct {
-	mu   sync.RWMutex
-	keys map[string]*treasuryKey
+	mu      sync.RWMutex
+	keys    map[string]*treasuryKey
+	signers map[string]*treasuryKey
 }
 
 func newKeystore() *keystore {
-	return &keystore{keys: make(map[string]*treasuryKey)}
+	return &keystore{
+		keys:    make(map[string]*treasuryKey),
+		signers: make(map[string]*treasuryKey),
+	}
 }
 
 // key returns the map key for a treasury id.
@@ -66,6 +77,20 @@ func treasuryKeyOf(treasuryID *big.Int) string {
 // endpoint for importing one, but an encrypted key sent through calldata is
 // permanent public storage, and encryption breaks given enough time.
 func (k *keystore) Generate(treasuryID *big.Int) (pubKey []byte, classicAddress string, err error) {
+	return k.generate(treasuryID, false)
+}
+
+// GenerateSigner creates this machine's signer key for a treasury.
+//
+// Separate from the master key and generated the same way, in the enclave, from
+// crypto/rand. A machine may hold both: it can be the one that created the
+// account and also one of the n signers that will authorise its payments once
+// the master key is retired.
+func (k *keystore) GenerateSigner(treasuryID *big.Int) (pubKey []byte, classicAddress string, err error) {
+	return k.generate(treasuryID, true)
+}
+
+func (k *keystore) generate(treasuryID *big.Int, signer bool) (pubKey []byte, classicAddress string, err error) {
 	id := treasuryKeyOf(treasuryID)
 	if id == "" {
 		return nil, "", fmt.Errorf("treasury id is required")
@@ -74,7 +99,12 @@ func (k *keystore) Generate(treasuryID *big.Int) (pubKey []byte, classicAddress 
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	if _, exists := k.keys[id]; exists {
+	store := k.keys
+	if signer {
+		store = k.signers
+	}
+
+	if _, exists := store[id]; exists {
 		return nil, "", fmt.Errorf("%w: %s", ErrKeyExists, id)
 	}
 
@@ -93,7 +123,7 @@ func (k *keystore) Generate(treasuryID *big.Int) (pubKey []byte, classicAddress 
 		return nil, "", fmt.Errorf("deriving account: %w", err)
 	}
 
-	k.keys[id] = &treasuryKey{
+	store[id] = &treasuryKey{
 		priv:           priv,
 		accountID:      accountID,
 		classicAddress: addr,
@@ -132,6 +162,78 @@ func (k *keystore) Sign(treasuryID *big.Int, p *xrpl.Payment) (blob []byte, txHa
 	return blob, txHash, nil
 }
 
+// MultiSign produces this machine's contribution to a k-of-n signature.
+//
+// It uses the signer key, never the master key. The sending account arrives with
+// the request rather than coming from this machine's own state, because a signer
+// key belongs to the signer and not to the treasury — the caller has already
+// proven that account against the multi-sign digest, and this function must not
+// be called before that check passes.
+//
+// The returned Signer authorises nothing on its own. That is the point.
+func (k *keystore) MultiSign(treasuryID *big.Int, p *xrpl.Payment) (xrpl.Signer, error) {
+	id := treasuryKeyOf(treasuryID)
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	tk, ok := k.signers[id]
+	if !ok {
+		return xrpl.Signer{}, fmt.Errorf("%w: no signer key for treasury %s", ErrNoKey, id)
+	}
+
+	signature, err := p.MultiSign(tk.priv)
+	if err != nil {
+		return xrpl.Signer{}, err
+	}
+
+	if p.Sequence > tk.lastSignedSequence {
+		tk.lastSignedSequence = p.Sequence
+	}
+
+	return signature, nil
+}
+
+// SignSignerList signs the transaction that hands authority over a treasury's
+// XRPL account to its signer set.
+//
+// The account is taken from this machine's own master key rather than from the
+// instruction. A relayer that could choose the account could install a signer
+// list on one it controls and have the enclave vouch for it.
+func (k *keystore) SignSignerList(treasuryID *big.Int, tx *xrpl.SignerListSet) ([]byte, xrpl.Hash, error) {
+	id := treasuryKeyOf(treasuryID)
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	tk, ok := k.keys[id]
+	if !ok {
+		return nil, xrpl.Hash{}, fmt.Errorf("%w: no master key for treasury %s", ErrNoKey, id)
+	}
+
+	tx.Account = tk.accountID
+	return tx.Sign(tk.priv)
+}
+
+// SignAccountSet signs the transaction that retires a treasury's master key.
+//
+// The last thing this key is asked to do is make itself unusable, which is what
+// turns the signer list from an additional authority into the only one.
+func (k *keystore) SignAccountSet(treasuryID *big.Int, tx *xrpl.AccountSet) ([]byte, xrpl.Hash, error) {
+	id := treasuryKeyOf(treasuryID)
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	tk, ok := k.keys[id]
+	if !ok {
+		return nil, xrpl.Hash{}, fmt.Errorf("%w: no master key for treasury %s", ErrNoKey, id)
+	}
+
+	tx.Account = tk.accountID
+	return tx.Sign(tk.priv)
+}
+
 // Status reports whether a treasury has a key and how far its sequence has gone.
 func (k *keystore) Status(treasuryID *big.Int) (hasKey bool, lastSignedSequence uint32) {
 	id := treasuryKeyOf(treasuryID)
@@ -165,22 +267,51 @@ func (k *keystore) snapshot() []treasurySnapshot {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
-	out := make([]treasurySnapshot, 0, len(k.keys))
+	byTreasury := make(map[string]*treasurySnapshot, len(k.keys)+len(k.signers))
+	at := func(id string) *treasurySnapshot {
+		s, ok := byTreasury[id]
+		if !ok {
+			s = &treasurySnapshot{TreasuryID: id}
+			byTreasury[id] = s
+		}
+		return s
+	}
+
 	for id, tk := range k.keys {
-		out = append(out, treasurySnapshot{
-			TreasuryID:         id,
-			HasKey:             true,
-			LastSignedSequence: tk.lastSignedSequence,
-			ClassicAddress:     tk.classicAddress,
-		})
+		s := at(id)
+		s.HasKey = true
+		s.ClassicAddress = tk.classicAddress
+		if tk.lastSignedSequence > s.LastSignedSequence {
+			s.LastSignedSequence = tk.lastSignedSequence
+		}
+	}
+	for id, tk := range k.signers {
+		s := at(id)
+		s.HasSignerKey = true
+		s.SignerAddress = tk.classicAddress
+		if tk.lastSignedSequence > s.LastSignedSequence {
+			s.LastSignedSequence = tk.lastSignedSequence
+		}
+	}
+
+	out := make([]treasurySnapshot, 0, len(byTreasury))
+	for _, s := range byTreasury {
+		out = append(out, *s)
 	}
 	return out
 }
 
 // treasurySnapshot is the internal shape of one treasury's observable state.
+//
+// Two addresses, because they mean different things: ClassicAddress is the
+// treasury's own XRPL account, and SignerAddress is this machine's identity
+// within that account's signer list. Both are public information derived from
+// public keys. Neither is a key.
 type treasurySnapshot struct {
 	TreasuryID         string
 	HasKey             bool
+	HasSignerKey       bool
 	LastSignedSequence uint32
 	ClassicAddress     string
+	SignerAddress      string
 }

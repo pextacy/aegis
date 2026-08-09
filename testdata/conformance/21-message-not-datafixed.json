@@ -3,7 +3,7 @@
   "expect": {
     "status": 400
   },
-  "name": "12-message-not-datafixed",
+  "name": "21-message-not-datafixed",
   "request": {
     "body": {
       "additionalActionData": "0x",

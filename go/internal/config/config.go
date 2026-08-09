@@ -10,7 +10,7 @@ import (
 const (
 	// Version is part of the extension lifecycle and the attestation identity.
 	// Bump it whenever behaviour or the on-chain interface changes.
-	Version = "0.2.0"
+	Version = "0.3.0"
 
 	// OPTypeXRPL must be byte-identical to OP_TYPE_XRPL in
 	// AegisInstructionSender.sol and to the teeutils.ToHash call in
@@ -26,6 +26,21 @@ const (
 	OPCommandSignTx = "SIGNTX"
 	// OPCommandStatus reports whether a treasury has a key, and nothing more.
 	OPCommandStatus = "STATUS"
+
+	// OPCommandSignerKeygen generates this machine's signer key for a treasury,
+	// held separately from any master key it may also hold. One machine losing
+	// its signer key costs a treasury one signature, not the treasury.
+	OPCommandSignerKeygen = "SKEYGN"
+
+	// OPCommandMultiSign produces this machine's contribution to a k-of-n
+	// signature, subject to the same digest check as SIGNTX plus the one that
+	// binds the account the payment leaves.
+	OPCommandMultiSign = "MSIGN"
+
+	// OPCommandSetup signs a transaction that moves a treasury to k-of-n:
+	// installing its signer list, then retiring its master key. Master-key
+	// signed, so only the machine that ran KEYGEN can answer.
+	OPCommandSetup = "SETUP"
 
 	TimeoutShutdown = 5 * time.Second
 )

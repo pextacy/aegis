@@ -3,7 +3,7 @@
   "expect": {
     "status": 405
   },
-  "name": "13-get-action-not-allowed",
+  "name": "22-get-action-not-allowed",
   "request": {
     "method": "GET",
     "path": "/action"

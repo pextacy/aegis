@@ -3,7 +3,7 @@
   "expect": {
     "status": 405
   },
-  "name": "14-post-state-not-allowed",
+  "name": "23-post-state-not-allowed",
   "request": {
     "method": "POST",
     "path": "/state",

@@ -3,7 +3,7 @@
   "expect": {
     "status": 400
   },
-  "name": "11-invalid-action-json",
+  "name": "20-invalid-action-json",
   "request": {
     "method": "POST",
     "path": "/action",

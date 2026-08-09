@@ -1,10 +1,10 @@
 {
-  "description": "An unrecognised opCommand is 501 and lists the three that exist",
+  "description": "An unrecognised opCommand is 501 and lists every command that exists",
   "expect": {
     "status": 501,
     "text_contains": "unsupported op command"
   },
-  "name": "10-unknown-op-command",
+  "name": "19-unknown-op-command",
   "request": {
     "body": {
       "additionalActionData": "0x",

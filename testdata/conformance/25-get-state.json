@@ -2,11 +2,11 @@
   "description": "GET /state reports the version and observable state. Addresses depend on the generated keys, so only stateVersion is pinned here; that no key material appears is asserted in TestStateExposesNoKeyMaterial.",
   "expect": {
     "json_subset": {
-      "stateVersion": "0x302e322e30000000000000000000000000000000000000000000000000000000"
+      "stateVersion": "0x302e332e30000000000000000000000000000000000000000000000000000000"
     },
     "status": 200
   },
-  "name": "16-get-state",
+  "name": "25-get-state",
   "request": {
     "method": "GET",
     "path": "/state"

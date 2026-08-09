@@ -3,7 +3,7 @@
   "expect": {
     "status": 404
   },
-  "name": "15-unknown-path",
+  "name": "24-unknown-path",
   "request": {
     "method": "GET",
     "path": "/does-not-exist"

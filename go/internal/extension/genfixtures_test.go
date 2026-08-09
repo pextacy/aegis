@@ -136,6 +136,22 @@ func aegisFixtures(t *testing.T) []map[string]any {
 		return encoded
 	}
 
+	multiSignRequest := func(req types.MultiSignRequest) []byte {
+		encoded, err := abi.Arguments{types.MultiSignRequestArg}.Pack(req)
+		if err != nil {
+			t.Fatalf("packing multi-sign request: %v", err)
+		}
+		return encoded
+	}
+
+	setupRequest := func(req types.SetupRequest) []byte {
+		encoded, err := abi.Arguments{types.SetupRequestArg}.Pack(req)
+		if err != nil {
+			t.Fatalf("packing setup request: %v", err)
+		}
+		return encoded
+	}
+
 	var dest [32]byte
 	copy(dest[:], common.FromHex("0xAED2ACA19C6F54926F8482648A694E7CB62BAA22"))
 
@@ -160,6 +176,74 @@ func aegisFixtures(t *testing.T) []map[string]any {
 	// relayer that altered the payload would produce.
 	tampered := honest
 	tampered.AmountDrops = honest.AmountDrops * 10
+
+	// The treasury account a k-of-n payment leaves, and two signer accounts. Real
+	// ones are random per run, so the fixtures use fixed AccountIDs: what is
+	// pinned here is the wire contract, not which keys a machine happened to make.
+	var source, signerA, signerB [32]byte
+	copy(source[:], common.FromHex("0x5B812C7F0E9A1D3E4F60718293A4B5C6D7E8F901"))
+	copy(signerA[:], common.FromHex("0x1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D"))
+	copy(signerB[:], common.FromHex("0xF0E1D2C3B4A5968778695A4B3C2D1E0FF0E1D2C3"))
+
+	honestMulti := types.MultiSignRequest{
+		RequestId:            honest.RequestId,
+		TreasuryId:           honest.TreasuryId,
+		SourceAccountId:      source,
+		DestinationAccountId: honest.DestinationAccountId,
+		DestinationTag:       honest.DestinationTag,
+		AmountDrops:          honest.AmountDrops,
+		Sequence:             honest.Sequence,
+		LastLedgerSequence:   honest.LastLedgerSequence,
+		FeeDrops:             honest.FeeDrops,
+		PolicyDigest:         honest.PolicyDigest,
+	}
+	multiDigest, err := honestMulti.ComputeMultiSignDigest()
+	if err != nil {
+		t.Fatalf("multi-sign digest: %v", err)
+	}
+	honestMulti.MultiSignDigest = multiDigest
+
+	// The same payment with its amount raised after the digests were computed.
+	tamperedMulti := honestMulti
+	tamperedMulti.AmountDrops = honestMulti.AmountDrops * 10
+
+	// A correctly-digested payment pointed at a different account — the policy
+	// digest still matches, which is exactly why the second digest exists.
+	redirectedMulti := honestMulti
+	copy(redirectedMulti.SourceAccountId[:], common.FromHex("0x00112233445566778899AABBCCDDEEFF00112233"))
+
+	honestSetup := types.SetupRequest{
+		TreasuryId:         big.NewInt(1),
+		Kind:               types.SetupKindSignerList,
+		Quorum:             2,
+		SignerAccountIds:   [][32]byte{signerA, signerB},
+		Sequence:           4,
+		LastLedgerSequence: 900_000,
+		FeeDrops:           12,
+	}
+	setupDigest, err := honestSetup.ComputeSetupDigest()
+	if err != nil {
+		t.Fatalf("setup digest: %v", err)
+	}
+	honestSetup.SetupDigest = setupDigest
+
+	// One more signer added after the digest was computed, which is the relayer
+	// writing itself into every future quorum.
+	tamperedSetup := honestSetup
+	tamperedSetup.SignerAccountIds = [][32]byte{signerA, signerB, redirectedMulti.SourceAccountId}
+
+	retireMaster := types.SetupRequest{
+		TreasuryId:         big.NewInt(1),
+		Kind:               types.SetupKindDisableMasterKey,
+		Sequence:           5,
+		LastLedgerSequence: 900_000,
+		FeeDrops:           12,
+	}
+	retireDigest, err := retireMaster.ComputeSetupDigest()
+	if err != nil {
+		t.Fatalf("retire digest: %v", err)
+	}
+	retireMaster.SetupDigest = retireDigest
 
 	statusAbsent, err := types.StatusResponseArgs.Pack(false, uint32(0))
 	if err != nil {
@@ -285,7 +369,118 @@ func aegisFixtures(t *testing.T) []map[string]any {
 			},
 		},
 		{
-			"name":        "09-unknown-op-type",
+			"name":        "09-signer-keygen-success",
+			"description": "SKEYGN generates this machine's signer key, held apart from the master key it already has for the same treasury",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSignerKeygen, treasury(1)),
+			},
+			"expect": map[string]any{"status": 200, "json_subset": okResult(config.OPCommandSignerKeygen)},
+		},
+		{
+			"name":        "10-signer-keygen-refused-when-a-signer-key-exists",
+			"description": "Replacing a live signer key would silently drop this machine out of every quorum its signer list expects it in",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSignerKeygen, treasury(1)),
+			},
+			"expect": map[string]any{
+				"status":      200,
+				"json_subset": map[string]any{"status": 0, "data": "0x"},
+				"log_prefix":  "error: ",
+			},
+		},
+		{
+			"name":        "11-msign-digest-mismatch",
+			"description": "The k-of-n path enforces the same policy digest as SIGNTX, over the same eight fields",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandMultiSign, multiSignRequest(tamperedMulti)),
+			},
+			"expect": map[string]any{
+				"status": 200,
+				"json_subset": map[string]any{
+					"status": 0,
+					"data":   "0x",
+					"log":    "error: " + logDigestMismatch,
+				},
+			},
+		},
+		{
+			"name": "12-msign-source-account-mismatch",
+			"description": "A correctly-digested payment pointed at another account is refused. " +
+				"A signer key does not know which treasury it signs for, so the account arrives with the instruction and has to carry its own digest.",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandMultiSign, multiSignRequest(redirectedMulti)),
+			},
+			"expect": map[string]any{
+				"status": 200,
+				"json_subset": map[string]any{
+					"status": 0,
+					"data":   "0x",
+					"log":    "error: " + logSourceMismatch,
+				},
+			},
+		},
+		{
+			"name":        "13-msign-success",
+			"description": "Both digests matching yields one signature — not a transaction, because one machine under k-of-n has authorised nothing",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandMultiSign, multiSignRequest(honestMulti)),
+			},
+			"expect": map[string]any{"status": 200, "json_subset": okResult(config.OPCommandMultiSign)},
+		},
+		{
+			"name":        "14-setup-digest-mismatch",
+			"description": "A signer list with one account added after the digest was computed is refused, because installing it decides who can ever spend from this treasury again",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSetup, setupRequest(tamperedSetup)),
+			},
+			"expect": map[string]any{
+				"status": 200,
+				"json_subset": map[string]any{
+					"status": 0,
+					"data":   "0x",
+					"log":    "error: " + logSetupDigestMismatch,
+				},
+			},
+		},
+		{
+			"name":        "15-setup-installs-the-signer-list",
+			"description": "SETUP signs the SignerListSet with the master key, handing authority over the account to the n signer keys",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSetup, setupRequest(honestSetup)),
+			},
+			"expect": map[string]any{"status": 200, "json_subset": okResult(config.OPCommandSetup)},
+		},
+		{
+			"name":        "16-setup-retires-the-master-key",
+			"description": "The master key's last act is making itself unusable, which is what turns the signer list from an additional authority into the only one",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSetup, setupRequest(retireMaster)),
+			},
+			"expect": map[string]any{"status": 200, "json_subset": okResult(config.OPCommandSetup)},
+		},
+		{
+			"name":        "17-setup-refused-without-the-master-key",
+			"description": "A machine that holds only a signer key cannot delegate authority it does not have",
+			"request": map[string]any{
+				"method": "POST", "path": "/action",
+				"body": fixtureAction(config.OPTypeXRPL, config.OPCommandSetup, setupRequest(setupFor(t, 77))),
+			},
+			"expect": map[string]any{
+				"status":      200,
+				"json_subset": map[string]any{"status": 0, "data": "0x"},
+				"log_prefix":  "error: ",
+			},
+		},
+		{
+			"name":        "18-unknown-op-type",
 			"description": "An unrecognised opType is 501, naming both the received and expected hashes",
 			"request": map[string]any{
 				"method": "POST", "path": "/action",
@@ -294,8 +489,8 @@ func aegisFixtures(t *testing.T) []map[string]any {
 			"expect": map[string]any{"status": 501, "text_contains": "unsupported op type"},
 		},
 		{
-			"name":        "10-unknown-op-command",
-			"description": "An unrecognised opCommand is 501 and lists the three that exist",
+			"name":        "19-unknown-op-command",
+			"description": "An unrecognised opCommand is 501 and lists every command that exists",
 			"request": map[string]any{
 				"method": "POST", "path": "/action",
 				"body": fixtureAction(config.OPTypeXRPL, "NOPE", treasury(1)),
@@ -303,7 +498,7 @@ func aegisFixtures(t *testing.T) []map[string]any {
 			"expect": map[string]any{"status": 501, "text_contains": "unsupported op command"},
 		},
 		{
-			"name":        "11-invalid-action-json",
+			"name":        "20-invalid-action-json",
 			"description": "A body that is not an Action is 400",
 			"request": map[string]any{
 				"method": "POST", "path": "/action", "raw_body": "not json at all",
@@ -311,7 +506,7 @@ func aegisFixtures(t *testing.T) []map[string]any {
 			"expect": map[string]any{"status": 400},
 		},
 		{
-			"name": "12-message-not-datafixed",
+			"name": "21-message-not-datafixed",
 			"description": "An Action whose message does not parse as DataFixed is 400. " +
 				"Note that a syntactically valid but empty object is not this case: " +
 				"it parses, yields a zero opType, and is refused as unsupported instead.",
@@ -333,25 +528,25 @@ func aegisFixtures(t *testing.T) []map[string]any {
 			"expect": map[string]any{"status": 400},
 		},
 		{
-			"name":        "13-get-action-not-allowed",
+			"name":        "22-get-action-not-allowed",
 			"description": "GET /action is 405",
 			"request":     map[string]any{"method": "GET", "path": "/action"},
 			"expect":      map[string]any{"status": 405},
 		},
 		{
-			"name":        "14-post-state-not-allowed",
+			"name":        "23-post-state-not-allowed",
 			"description": "POST /state is 405",
 			"request":     map[string]any{"method": "POST", "path": "/state", "raw_body": ""},
 			"expect":      map[string]any{"status": 405},
 		},
 		{
-			"name":        "15-unknown-path",
+			"name":        "24-unknown-path",
 			"description": "An unknown path is 404",
 			"request":     map[string]any{"method": "GET", "path": "/does-not-exist"},
 			"expect":      map[string]any{"status": 404},
 		},
 		{
-			"name": "16-get-state",
+			"name": "25-get-state",
 			"description": "GET /state reports the version and observable state. " +
 				"Addresses depend on the generated keys, so only stateVersion is pinned here; " +
 				"that no key material appears is asserted in TestStateExposesNoKeyMaterial.",
@@ -387,5 +582,31 @@ func signRequestFor(t *testing.T, treasuryID int64) types.SignRequest {
 		t.Fatal(fmt.Errorf("digest: %w", err))
 	}
 	req.PolicyDigest = digest
+	return req
+}
+
+// setupFor builds an honestly-digested signer list for a treasury this machine
+// has no master key for, so the refusal under test is about the missing key and
+// nothing else.
+func setupFor(t *testing.T, treasuryID int64) types.SetupRequest {
+	t.Helper()
+
+	var signer [32]byte
+	copy(signer[:], common.FromHex("0x1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D"))
+
+	req := types.SetupRequest{
+		TreasuryId:         big.NewInt(treasuryID),
+		Kind:               types.SetupKindSignerList,
+		Quorum:             1,
+		SignerAccountIds:   [][32]byte{signer},
+		Sequence:           1,
+		LastLedgerSequence: 900_000,
+		FeeDrops:           12,
+	}
+	digest, err := req.ComputeSetupDigest()
+	if err != nil {
+		t.Fatalf("computing setup digest: %v", err)
+	}
+	req.SetupDigest = digest
 	return req
 }
