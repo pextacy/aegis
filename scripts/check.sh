@@ -212,6 +212,30 @@ if want hygiene; then
         fail "opType alignment: solidity='$SOL_OP' goconfig='$GO_OP' gouse='$GO_USE'"
     fi
 
+    # Every opCommand, the same three ways. A drift here surfaces on a live
+    # chain as "unsupported op command", a long way from the change that caused
+    # it, so it is asserted mechanically rather than remembered.
+    COMMAND_DRIFT=0
+    for pair in \
+        "KEYGEN:OPCommandKeygen" \
+        "SIGNTX:OPCommandSignTx" \
+        "STATUS:OPCommandStatus" \
+        "SKEYGN:OPCommandSignerKeygen" \
+        "MSIGN:OPCommandMultiSign" \
+        "SETUP:OPCommandSetup"; do
+        literal="${pair%%:*}"
+        goname="${pair##*:}"
+        grep -qF "bytes32(\"$literal\")" contracts/AegisInstructionSender.sol \
+            || { fail "opCommand $literal missing from AegisInstructionSender.sol"; COMMAND_DRIFT=1; }
+        grep -qE "$goname = \"$literal\"" go/internal/config/config.go \
+            || { fail "opCommand $literal missing from go/internal/config/config.go as $goname"; COMMAND_DRIFT=1; }
+        grep -qF "teeutils.ToHash(config.$goname)" go/internal/extension/extension.go \
+            || { fail "opCommand $literal not routed on in go/internal/extension/extension.go"; COMMAND_DRIFT=1; }
+    done
+    if (( COMMAND_DRIFT == 0 )); then
+        pass "all six opCommands aligned across Solidity, Go config and Go routing"
+    fi
+
     # A key must never be reachable from a response type.
     if grep -rnE '\bpriv\w*\s+\*?btcec\.PrivateKey' go/pkg 2>/dev/null; then
         fail "a private key type appears in the public types package"

@@ -40,6 +40,28 @@ contract AegisInstructionSenderTest is Test {
     bytes internal constant PUBKEY = hex"0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020";
     string internal constant CLASSIC = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh";
 
+    /// @dev Three real secp256k1 keys with their real XRPL addresses, taken from
+    /// validated mainnet transactions. Invented pairs would let a derivation bug
+    /// agree with itself.
+    bytes internal constant SIGNER_A_KEY = hex"028A4E362A90B01687CF26F2351FDFD1725FE7638F341453A2601DC562CE83F91D";
+    string internal constant SIGNER_A_ADDR = "r4sj7Mq8hWyJdFfGCvXWpJoq7JX872582B";
+    bytes internal constant SIGNER_B_KEY = hex"02C6478EF003B4CF203A1040E6784A5FEE2CF5FEA34EA7420E3AE1538C38BD26BA";
+    string internal constant SIGNER_B_ADDR = "r45fyERJYiFyPFEZSUUbsvVyswiBHkynHm";
+    bytes internal constant SIGNER_C_KEY = hex"03BC08FCDE76B929B00A625B4E83B73E8CA83F72195E0B52BCBDC668CF37C4A92B";
+    string internal constant SIGNER_C_ADDR = "rDseVXFK1SkWhFH65cqAxf3HmvHCF6b94t";
+
+    /// @dev The setup kinds, mirrored here as literals so that reading them is
+    /// not an external call — which would consume the prank or expectRevert it
+    /// sits inside. test_kOfNOpCommandsAreTheExpectedStrings pins them against
+    /// the contract's own constants.
+    uint8 internal constant KIND_SIGNER_LIST = 0;
+    uint8 internal constant KIND_RETIRE = 1;
+
+    /// @dev A DER-shaped signature. Its contents are never checked on-chain, so
+    /// what matters is that it is non-empty and its key is a bound signer.
+    bytes internal constant SIGNATURE = hex"3044022059080417C896697EE10484BE72C0643C5F1D67426241665D0F5A34312A5A8A63"
+        hex"022075AF9844112FA3B83706B46FC3D7543250BB108E94B7C5038878BCD5847ACBEF";
+
     function setUp() public {
         vm.warp(1_700_000_000);
 
@@ -323,7 +345,261 @@ contract AegisInstructionSenderTest is Test {
         assertEq(policy.guardianCount(policyId), 2);
     }
 
+    // --- k-of-n ------------------------------------------------------------
+
+    /// @dev The Go side asserts the same three strings. A drift in any of them
+    /// surfaces as "unsupported op command" on a live instruction, which is a
+    /// long way from the change that caused it.
+    function test_kOfNOpCommandsAreTheExpectedStrings() public view {
+        assertEq(sender.OP_COMMAND_SKEYGEN(), bytes32("SKEYGN"));
+        assertEq(sender.OP_COMMAND_MSIGN(), bytes32("MSIGN"));
+        assertEq(sender.OP_COMMAND_SETUP(), bytes32("SETUP"));
+        assertEq(sender.SETUP_KIND_SIGNER_LIST(), KIND_SIGNER_LIST);
+        assertEq(sender.SETUP_KIND_DISABLE_MASTER_KEY(), KIND_RETIRE);
+    }
+
+    function test_signerKeygenGoesToEveryMachineInTheSet() public {
+        _configureSignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSignerKeygen(treasuryId);
+
+        TeeExtensionRegistryStub.Sent memory sent = extRegistry.lastSent();
+        assertEq(sent.opCommand, bytes32("SKEYGN"));
+        assertEq(sent.message, abi.encode(treasuryId));
+        assertEq(sent.teeIds.length, 3, "one machine per signer slot");
+    }
+
+    function test_signerKeygenNeedsAConfiguredSet() public {
+        _bindAccount();
+        vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.SignerSetNotConfigured.selector, treasuryId));
+        vm.prank(admin);
+        sender.requestSignerKeygen(treasuryId);
+    }
+
+    function test_onlyPolicyAdminMayRequestSignerKeygen() public {
+        _configureSignerSet(2, 3);
+        vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.NotPolicyAdmin.selector, policyId, outsider));
+        vm.prank(outsider);
+        sender.requestSignerKeygen(treasuryId);
+    }
+
+    /// @dev One instruction, n machines, n results. The pending record has to
+    /// accept every one of them and then stop, which a consumed flag could not
+    /// express.
+    function test_oneSignerKeygenInstructionAcceptsOneResultPerMachine() public {
+        _configureSignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSignerKeygen(treasuryId);
+        bytes32 id = _lastInstructionId(bytes32("SKEYGN"));
+
+        vm.startPrank(submitter);
+        sender.submitSignerKeygenResult(id, SIGNER_A_KEY, SIGNER_A_ADDR);
+        sender.submitSignerKeygenResult(id, SIGNER_B_KEY, SIGNER_B_ADDR);
+        sender.submitSignerKeygenResult(id, SIGNER_C_KEY, SIGNER_C_ADDR);
+
+        vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.InstructionAlreadyConsumed.selector, id));
+        sender.submitSignerKeygenResult(id, PUBKEY, CLASSIC);
+        vm.stopPrank();
+
+        assertEq(registry.signersOf(treasuryId).length, 3);
+    }
+
+    function test_setupInstructionCarriesTheSignerListAndItsDigest() public {
+        _readySignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+
+        TeeExtensionRegistryStub.Sent memory sent = extRegistry.lastSent();
+        assertEq(sent.opCommand, bytes32("SETUP"));
+
+        AegisInstructionSender.SetupRequest memory req = abi.decode(sent.message, (AegisInstructionSender.SetupRequest));
+        assertEq(req.treasuryId, treasuryId);
+        assertEq(req.kind, 0);
+        assertEq(req.quorum, 2);
+        assertEq(req.signerAccountIds.length, 3);
+        assertEq(
+            req.setupDigest,
+            sender.setupDigest(treasuryId, 0, 2, req.signerAccountIds, 7, 900_000, 12),
+            "the digest describes the fields that were sent"
+        );
+    }
+
+    /// @dev The signer list comes from the registry, not the caller. Those keys
+    /// were generated by enclaves and already verified against the addresses
+    /// they claimed, so there is nothing here for a caller to choose.
+    function test_setupRefusesTheSignerListStepBeforeTheSetIsFull() public {
+        _configureSignerSet(2, 3);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AegisInstructionSender.SignerSetNotInState.selector,
+                TreasuryRegistry.SignerSetState.Collecting,
+                TreasuryRegistry.SignerSetState.Ready
+            )
+        );
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+    }
+
+    /// @dev Retiring the master key before the list is live would leave an
+    /// account nothing could sign for.
+    function test_setupRefusesRetirementBeforeTheListIsLive() public {
+        _readySignerSet(2, 3);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AegisInstructionSender.SignerSetNotInState.selector,
+                TreasuryRegistry.SignerSetState.Ready,
+                TreasuryRegistry.SignerSetState.Installed
+            )
+        );
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_RETIRE, 8, 900_000, 12);
+    }
+
+    function test_retirementCarriesNoSignerList() public {
+        _installSignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_RETIRE, 8, 900_000, 12);
+
+        AegisInstructionSender.SetupRequest memory req =
+            abi.decode(extRegistry.lastSent().message, (AegisInstructionSender.SetupRequest));
+        assertEq(req.kind, 1);
+        assertEq(req.quorum, 0);
+        assertEq(req.signerAccountIds.length, 0, "a retirement takes no signer list");
+    }
+
+    function test_setupRefusesAnUnknownKind() public {
+        _readySignerSet(2, 3);
+        vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.UnknownSetupKind.selector, uint8(7)));
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, 7, 7, 900_000, 12);
+    }
+
+    function test_setupRefusesATransactionThatCouldNeverExpire() public {
+        _readySignerSet(2, 3);
+        vm.expectRevert(AegisInstructionSender.LastLedgerSequenceRequired.selector);
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 0, 12);
+    }
+
+    function test_setupResultPublishesTheSignedTransaction() public {
+        _readySignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        bytes32 id = _lastInstructionId(bytes32("SETUP"));
+
+        bytes memory blob = hex"12000C220001000024000000012023000000";
+        vm.expectEmit(true, true, false, true);
+        emit AegisInstructionSender.SetupTransactionSigned(id, treasuryId, 0, blob, keccak256(blob));
+        vm.prank(submitter);
+        sender.submitSetupResult(id, 0, blob, keccak256(blob));
+    }
+
+    /// @dev Only one machine holds the master key, so one accepted result is the
+    /// whole outcome and a second would be a replay rather than a contribution.
+    function test_setupResultCannotBeReplayed() public {
+        _readySignerSet(2, 3);
+
+        vm.prank(admin);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        bytes32 id = _lastInstructionId(bytes32("SETUP"));
+
+        vm.startPrank(submitter);
+        sender.submitSetupResult(id, 0, hex"1200", bytes32(uint256(1)));
+        vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.InstructionAlreadyConsumed.selector, id));
+        sender.submitSetupResult(id, 0, hex"1200", bytes32(uint256(1)));
+        vm.stopPrank();
+    }
+
+    function test_dispatchToAQuorumSendsOneInstructionToEveryMachine() public {
+        _installSignerSet(2, 3);
+        uint256 requestId = _proposeApproveDispatch();
+
+        TeeExtensionRegistryStub.Sent memory sent = extRegistry.lastSent();
+        assertEq(sent.opCommand, bytes32("MSIGN"));
+        assertEq(sent.teeIds.length, 3);
+
+        IAegisInstructionSender.MultiSignRequest memory req =
+            abi.decode(sent.message, (IAegisInstructionSender.MultiSignRequest));
+        assertEq(req.requestId, requestId);
+        assertEq(req.sourceAccountId, registry.getTreasury(treasuryId).xrplAccountId);
+        assertEq(
+            req.multiSignDigest,
+            controller.multiSignDigest(req.policyDigest, req.sourceAccountId),
+            "both digests travel with the instruction"
+        );
+    }
+
+    function test_partialSignatureResultsReachTheController() public {
+        _installSignerSet(2, 3);
+        uint256 requestId = _proposeApproveDispatch();
+        bytes32 id = _lastInstructionId(bytes32("MSIGN"));
+
+        vm.startPrank(submitter);
+        sender.submitPartialSignatureResult(id, SIGNER_A_KEY, SIGNATURE);
+        sender.submitPartialSignatureResult(id, SIGNER_B_KEY, SIGNATURE);
+        vm.stopPrank();
+
+        assertEq(controller.partialSignatureCount(requestId), 2);
+        assertTrue(controller.getRequest(requestId).state == PaymentController.RequestState.Signed);
+    }
+
+    function test_onlyTheResultSubmitterRelaysPartialSignatures() public {
+        _installSignerSet(2, 3);
+        _proposeApproveDispatch();
+        bytes32 id = _lastInstructionId(bytes32("MSIGN"));
+
+        vm.expectRevert(AegisInstructionSender.NotResultSubmitter.selector);
+        vm.prank(outsider);
+        sender.submitPartialSignatureResult(id, SIGNER_A_KEY, SIGNATURE);
+    }
+
+    function test_aPartialSignatureCannotAnswerAKeygenInstruction() public {
+        _configureSignerSet(2, 3);
+        vm.prank(admin);
+        sender.requestSignerKeygen(treasuryId);
+        bytes32 id = _lastInstructionId(bytes32("SKEYGN"));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(AegisInstructionSender.WrongCommand.selector, bytes32("MSIGN"), bytes32("SKEYGN"))
+        );
+        vm.prank(submitter);
+        sender.submitPartialSignatureResult(id, SIGNER_A_KEY, SIGNATURE);
+    }
+
     // --- helpers -----------------------------------------------------------
+
+    function _configureSignerSet(uint8 quorum, uint8 signerCount) private {
+        if (registry.getTreasury(treasuryId).xrplAccountId == bytes32(0)) _bindAccount();
+        vm.prank(admin);
+        registry.configureSignerSet(treasuryId, quorum, signerCount);
+    }
+
+    function _readySignerSet(uint8 quorum, uint8 signerCount) private {
+        _configureSignerSet(quorum, signerCount);
+
+        vm.prank(admin);
+        sender.requestSignerKeygen(treasuryId);
+        bytes32 id = _lastInstructionId(bytes32("SKEYGN"));
+
+        bytes[3] memory keys = [SIGNER_A_KEY, SIGNER_B_KEY, SIGNER_C_KEY];
+        string[3] memory addrs = [SIGNER_A_ADDR, SIGNER_B_ADDR, SIGNER_C_ADDR];
+        vm.startPrank(submitter);
+        for (uint8 i = 0; i < signerCount; ++i) {
+            sender.submitSignerKeygenResult(id, keys[i], addrs[i]);
+        }
+        vm.stopPrank();
+    }
+
+    function _installSignerSet(uint8 quorum, uint8 signerCount) private {
+        _readySignerSet(quorum, signerCount);
+        vm.prank(admin);
+        registry.confirmSignerListInstalled(treasuryId, keccak256("installed"));
+    }
 
     function _bindAccount() private returns (bytes32 id) {
         vm.prank(admin);

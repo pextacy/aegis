@@ -152,6 +152,325 @@ contract PaymentControllerTest is AegisFixture {
         controller.approve(id);
     }
 
+    // --- revocation -------------------------------------------------------
+
+    function test_approverCanWithdrawTheirOwnApproval() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 1);
+        assertEq(controller.getRequest(id).approvals, 1);
+        assertTrue(controller.hasApproved(id, approverA));
+
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+
+        assertEq(controller.getRequest(id).approvals, 0);
+        assertFalse(controller.hasApproved(id, approverA));
+    }
+
+    function test_revocationReturnsAnApprovedRequestToProposed() public {
+        // Tier 1 needs two approvals, so this request is fully authorised.
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+        assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Approved));
+
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+
+        PaymentController.PaymentRequest memory r = controller.getRequest(id);
+        assertEq(uint8(r.state), uint8(PaymentController.RequestState.Proposed));
+        assertEq(r.approvals, 1);
+    }
+
+    /// @dev The property the whole path exists for. A request that had reached
+    /// its threshold must not remain dispatchable once an approver withdraws,
+    /// even after the timelock has fully elapsed.
+    function test_dispatchIsRefusedAfterAnApprovalIsWithdrawn() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+
+        vm.warp(block.timestamp + 2 hours);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PaymentController.WrongState.selector,
+                PaymentController.RequestState.Proposed,
+                PaymentController.RequestState.Approved
+            )
+        );
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+    }
+
+    function test_revokedApprovalCanBeGivenAgain() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+        vm.prank(approverB);
+        controller.approve(id);
+
+        PaymentController.PaymentRequest memory r = controller.getRequest(id);
+        assertEq(uint8(r.state), uint8(PaymentController.RequestState.Approved));
+        assertEq(r.approvals, 2);
+    }
+
+    /// @dev `eligibleAt` is a proposal-time clock. If revoking restarted it, one
+    /// approver could push a payment out indefinitely by approving and
+    /// withdrawing, which is a denial of service dressed as caution.
+    function test_revocationDoesNotRestartTheTimelock() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+        uint64 eligibleAt = controller.getRequest(id).eligibleAt;
+
+        vm.warp(block.timestamp + 30 minutes);
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+        vm.prank(approverB);
+        controller.approve(id);
+
+        assertEq(controller.getRequest(id).eligibleAt, eligibleAt);
+    }
+
+    function test_cannotRevokeAnApprovalNeverGiven() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 1);
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.NotApproved.selector, id, approverB));
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+    }
+
+    function test_cannotRevokeTheSameApprovalTwice() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 1);
+
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.NotApproved.selector, id, approverA));
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+    }
+
+    /// @dev One approver must not be able to strike another's approval. That
+    /// would be a veto, and no role in the policy grants one.
+    function test_oneApproverCannotRevokeAnothers() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 1);
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.NotApproved.selector, id, approverC));
+        vm.prank(approverC);
+        controller.revokeApproval(id);
+
+        assertEq(controller.getRequest(id).approvals, 1);
+    }
+
+    function test_cannotRevokeAfterDispatch() public {
+        uint256 id = proposeAndApprove(dropsForUsd(100e18), 1);
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PaymentController.WrongState.selector,
+                PaymentController.RequestState.Dispatched,
+                PaymentController.RequestState.Proposed
+            )
+        );
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+    }
+
+    function test_cannotRevokeAfterCancellation() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 1);
+        vm.prank(proposer);
+        controller.cancel(id);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PaymentController.WrongState.selector,
+                PaymentController.RequestState.Cancelled,
+                PaymentController.RequestState.Proposed
+            )
+        );
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+    }
+
+    /// @dev An address whose approver role was taken away still has its approval
+    /// counted toward the threshold. If the role were required to withdraw it,
+    /// that approval would be stranded and a removed approver's authority would
+    /// carry the payment.
+    function test_revocationSurvivesLosingTheApproverRole() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, 0);
+
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+
+        PaymentController.PaymentRequest memory r = controller.getRequest(id);
+        assertEq(uint8(r.state), uint8(PaymentController.RequestState.Proposed));
+        assertEq(r.approvals, 1);
+    }
+
+    /// @dev Every refusal-to-spend path stays open on a frozen treasury. A freeze
+    /// that also preserved approvals would protect the payment it interrupted.
+    function test_revocationIsAllowedWhileTheTreasuryIsFrozen() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(guardian);
+        registry.freeze(treasuryId);
+
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+
+        assertEq(controller.getRequest(id).approvals, 1);
+    }
+
+    function test_revocationEmitsTheCountsItLeavesBehind() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.expectEmit(true, true, false, true);
+        emit PaymentController.PaymentApprovalRevoked(id, approverB, 1, 2);
+        vm.prank(approverB);
+        controller.revokeApproval(id);
+    }
+
+    function test_revokingAnUnknownRequestReverts() public {
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.RequestNotFound.selector, uint256(999)));
+        vm.prank(approverA);
+        controller.revokeApproval(999);
+    }
+
+    // --- approver authority is re-checked at dispatch ----------------------
+
+    /// @dev The reason the approver set is stored rather than counted. A policy
+    /// admin who discovers an approver is compromised revokes their role — and
+    /// before this check, every request that approver had already signed off
+    /// still carried their vote to dispatch.
+    function test_dispatchRefusesAnApprovalWhoseRoleWasRevoked() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+        assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Approved));
+
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, 0);
+
+        vm.warp(block.timestamp + 2 hours);
+        setPrice(XRP_PRICE, uint64(block.timestamp));
+
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.InsufficientApprovals.selector, 1, 2));
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+    }
+
+    function test_dispatchProceedsWhileEveryApproverStillHoldsTheRole() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.warp(block.timestamp + 2 hours);
+        setPrice(XRP_PRICE, uint64(block.timestamp));
+
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+
+        assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Dispatched));
+    }
+
+    /// @dev A revoked role only matters if it takes the request below the
+    /// threshold that applies at dispatch, and that threshold is re-resolved
+    /// from the live price. Here XRP falls far enough to move the payment down
+    /// into tier 0, which needs one approval — so the one surviving approval is
+    /// enough and the payment goes out. The check is against current authority
+    /// versus the current rule, not a blanket strike against the request.
+    function test_revokedRoleDoesNotBlockADispatchThatStillMeetsTheThreshold() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, 0);
+
+        vm.warp(block.timestamp + 2 hours);
+        // 5,000 USD at proposal becomes 500 USD, which is tier 0 and needs one.
+        setPrice(XRP_PRICE / 10, uint64(block.timestamp));
+        assertEq(controller.validApprovals(id), 1);
+
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+
+        assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Dispatched));
+    }
+
+    function test_validApprovalsFallsBelowTheRawCountWhenARoleIsRevoked() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+        assertEq(controller.validApprovals(id), 2);
+
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, 0);
+
+        assertEq(controller.getRequest(id).approvals, 2, "the raw count is unchanged");
+        assertEq(controller.validApprovals(id), 1, "but only one still carries authority");
+    }
+
+    /// @dev Revoking a role is not permanent. Restoring it restores the payment,
+    /// because the check reads current authority rather than recording a strike.
+    function test_restoringTheRoleRestoresTheDispatch() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+        // Read before the pranks, or the first one is spent on this call rather
+        // than on setRoles.
+        uint8 approverRole = policy.ROLE_APPROVER();
+
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, 0);
+        vm.prank(admin);
+        policy.setRoles(policyId, approverB, approverRole);
+
+        vm.warp(block.timestamp + 2 hours);
+        setPrice(XRP_PRICE, uint64(block.timestamp));
+
+        vm.prank(proposer);
+        controller.dispatch(id, FLS, LLS, FEE);
+
+        assertEq(uint8(controller.getRequest(id).state), uint8(PaymentController.RequestState.Dispatched));
+    }
+
+    function test_approverSetTracksApprovalsAndWithdrawals() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        address[] memory both = controller.approversOf(id);
+        assertEq(both.length, 2);
+        assertEq(both[0], approverA);
+        assertEq(both[1], approverB);
+
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+
+        address[] memory left = controller.approversOf(id);
+        assertEq(left.length, 1);
+        assertEq(left[0], approverB, "the last entry fills the gap");
+    }
+
+    function test_approverSetIsEmptyBeforeAnyApproval() public {
+        vm.prank(proposer);
+        uint256 id = controller.propose(treasuryId, DEST, 0, dropsForUsd(5_000e18));
+        assertEq(controller.approversOf(id).length, 0);
+        assertEq(controller.validApprovals(id), 0);
+    }
+
+    /// @dev Withdrawing and approving again must not leave a duplicate behind,
+    /// or one address would be counted twice toward the threshold.
+    function test_reApprovingDoesNotDuplicateTheApprover() public {
+        uint256 id = proposeAndApprove(dropsForUsd(5_000e18), 2);
+
+        vm.prank(approverA);
+        controller.revokeApproval(id);
+        vm.prank(approverA);
+        controller.approve(id);
+
+        assertEq(controller.approversOf(id).length, 2);
+        assertEq(controller.validApprovals(id), 2);
+        assertEq(controller.getRequest(id).approvals, 2);
+    }
+
+    function test_validApprovalsRejectsAnUnknownRequest() public {
+        vm.expectRevert(abi.encodeWithSelector(PaymentController.RequestNotFound.selector, uint256(999)));
+        controller.validApprovals(999);
+    }
+
     // --- dispatch ---------------------------------------------------------
 
     function test_dispatchBeforeTimelockReverts() public {

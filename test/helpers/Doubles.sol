@@ -29,7 +29,9 @@ contract FtsoStub is IFtsoV2 {
 /// @notice Test-only instruction sender that records what it was asked to sign.
 contract SenderRecorder is IAegisInstructionSender {
     SignRequest public last;
+    MultiSignRequest public lastMulti;
     uint256 public calls;
+    uint256 public multiCalls;
     uint256 public valueReceived;
     uint8 public lastThreshold;
 
@@ -39,6 +41,18 @@ contract SenderRecorder is IAegisInstructionSender {
         valueReceived += msg.value;
         unchecked {
             ++calls;
+        }
+    }
+
+    function requestMultiSignature(MultiSignRequest calldata request, address[] calldata, uint8 threshold)
+        external
+        payable
+    {
+        lastMulti = request;
+        lastThreshold = threshold;
+        valueReceived += msg.value;
+        unchecked {
+            ++multiCalls;
         }
     }
 }

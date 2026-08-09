@@ -5,6 +5,7 @@ import {IAegisInstructionSender} from "./interfaces/IAegisInstructionSender.sol"
 import {IFtsoV2} from "./interfaces/IFtsoV2.sol";
 import {PolicyEngine} from "./PolicyEngine.sol";
 import {TreasuryRegistry} from "./TreasuryRegistry.sol";
+import {XrplAddress} from "./lib/XrplAddress.sol";
 
 /// @title PaymentController
 /// @author Aegis
@@ -45,6 +46,19 @@ contract PaymentController {
         address proposer;
         uint256 committedUsd;
         uint256 windowIndex;
+        // Appended for k-of-n. Both are zero on a treasury that signs with one
+        // key, and both are snapshots taken at dispatch: a quorum changed while
+        // a payment is in flight must not move the bar the payment was
+        // dispatched under.
+        bytes32 multiSignDigest;
+        uint8 quorumRequired;
+    }
+
+    /// @notice One enclave's share of a k-of-n signature.
+    struct PartialSignature {
+        bytes32 signerAccountId;
+        bytes signerPubKey;
+        bytes signature;
     }
 
     /// @notice One committed spend inside a treasury's rolling window.
@@ -83,8 +97,15 @@ contract PaymentController {
 
     mapping(uint256 requestId => PaymentRequest) private _requests;
     mapping(uint256 requestId => mapping(address approver => bool)) private _approved;
+    /// @dev Who approved, not just how many. `dispatch` re-checks that each of
+    /// these still holds `ROLE_APPROVER`, which a bare count cannot express.
+    /// Bounded by the request's `requiredApprovals`, because `approve` refuses
+    /// any state but `Proposed` and the threshold is what leaves that state.
+    mapping(uint256 requestId => address[]) private _approvers;
     mapping(uint256 treasuryId => WindowEntry[]) private _window;
     mapping(uint256 treasuryId => uint256) private _windowHead;
+    mapping(uint256 requestId => PartialSignature[]) private _partialSignatures;
+    mapping(uint256 requestId => mapping(bytes32 signerAccountId => bool)) private _hasPartiallySigned;
 
     /// @notice Emitted when a payment is proposed and has passed every policy check.
     event PaymentProposed(
@@ -100,6 +121,8 @@ contract PaymentController {
     );
     /// @notice Emitted on each approval.
     event PaymentApproved(uint256 indexed requestId, address indexed approver, uint8 approvals, uint8 required);
+    /// @notice Emitted when an approver withdraws their own approval.
+    event PaymentApprovalRevoked(uint256 indexed requestId, address indexed approver, uint8 approvals, uint8 required);
     /// @notice Emitted when a request reaches its approval threshold.
     event PaymentReady(uint256 indexed requestId, uint64 eligibleAt);
     /// @notice Emitted when a signing instruction goes to the TEE.
@@ -113,6 +136,19 @@ contract PaymentController {
     );
     /// @notice Emitted when the TEE returns a signature. The submitter watches this.
     event PaymentSigned(uint256 indexed requestId, bytes signedBlob, bytes32 txHash);
+    /// @notice Emitted for each enclave that contributes to a k-of-n signature.
+    /// @dev Every share is published, so a quorum can be reconstructed from chain
+    /// data alone with no Aegis service running — which is what lets anyone
+    /// assemble and submit the transaction, and what makes the assembler
+    /// powerless rather than trusted.
+    event PaymentPartiallySigned(
+        uint256 indexed requestId, bytes32 indexed signerAccountId, bytes signerPubKey, bytes signature, uint8 collected
+    );
+    /// @notice Emitted when enough enclaves have signed for the payment to submit.
+    event PaymentMultiSigned(uint256 indexed requestId, uint256 indexed treasuryId, uint8 collected, uint8 quorum);
+    /// @notice Emitted when a share arrives for a payment that already reached
+    /// its quorum, which is a late machine rather than an error.
+    event PartialSignatureIgnored(uint256 indexed requestId, bytes32 indexed signerAccountId);
     /// @notice Emitted when an FDC proof confirms settlement.
     event PaymentSettled(uint256 indexed requestId, uint32 sequence);
     /// @notice Emitted when a request ends without moving funds.
@@ -160,8 +196,23 @@ contract PaymentController {
     error WrongState(RequestState have, RequestState want);
     error ProposerCannotApprove(uint256 requestId);
     error AlreadyApproved(uint256 requestId, address approver);
+    error NotApproved(uint256 requestId, address approver);
+    error ApproverEntryMissing(uint256 requestId, address approver);
     error TimelockNotElapsed(uint64 eligibleAt, uint64 nowTime);
     error InsufficientApprovals(uint8 have, uint8 need);
+
+    /// @notice A share of a k-of-n signature came from a key that is not in the
+    /// treasury's signer list, so XRPL would not count it either.
+    error NotATreasurySigner(uint256 treasuryId, bytes32 signerAccountId);
+
+    /// @notice The same enclave cannot contribute twice towards one quorum.
+    error AlreadyPartiallySigned(uint256 requestId, bytes32 signerAccountId);
+
+    /// @notice A share arrived for a payment that was never dispatched to a quorum.
+    error NotAQuorumPayment(uint256 requestId);
+
+    /// @notice A signature or a key of zero length is not a contribution.
+    error EmptySignature(uint256 requestId);
 
     /// @param policyEngine The policy engine.
     /// @param treasuryRegistry The treasury registry.
@@ -277,6 +328,7 @@ contract PaymentController {
         if (_approved[requestId][msg.sender]) revert AlreadyApproved(requestId, msg.sender);
 
         _approved[requestId][msg.sender] = true;
+        _approvers[requestId].push(msg.sender);
         unchecked {
             ++r.approvals;
         }
@@ -287,6 +339,53 @@ contract PaymentController {
             r.state = RequestState.Approved;
             emit PaymentReady(requestId, r.eligibleAt);
         }
+    }
+
+    /// @notice Withdraws an approval the caller gave earlier, before dispatch.
+    /// @dev The timelock exists so that an approver has time to reconsider.
+    /// Without this path the only way to act on reconsidering is a guardian
+    /// freeze, which stops every payment the treasury has in flight rather than
+    /// the one the approver objects to.
+    ///
+    /// Three deliberate asymmetries with `approve`:
+    ///
+    /// - No role check. An address whose `ROLE_APPROVER` was taken away still
+    ///   occupies a slot in `approvals` and in the approver set — `dispatch` no
+    ///   longer weighs it, but nothing else removes it either. Requiring the role
+    ///   here would leave that entry stranded, with no one able to clear it.
+    /// - The freeze is not checked. Revoking is a withdrawal of authorisation,
+    ///   and every other refusal-to-spend path in this system stays open when a
+    ///   treasury is frozen. Blocking it would make a freeze *preserve* the
+    ///   approvals it is meant to interrupt.
+    /// - Only the approver themselves. Anyone else revoking a third party's
+    ///   approval would be a veto that no role in the policy grants.
+    /// @param requestId The request.
+    function revokeApproval(uint256 requestId) external {
+        PaymentRequest storage r = _requireRequest(requestId);
+        if (r.state != RequestState.Proposed && r.state != RequestState.Approved) {
+            revert WrongState(r.state, RequestState.Proposed);
+        }
+        if (!_approved[requestId][msg.sender]) revert NotApproved(requestId, msg.sender);
+
+        _approved[requestId][msg.sender] = false;
+        _removeApprover(requestId, msg.sender);
+        unchecked {
+            --r.approvals;
+        }
+
+        // Demotion from `Approved` is unconditional, and that is an invariant
+        // rather than a shortcut: `approve` refuses any state but `Proposed`, and
+        // `PolicyEngine.createPolicy` rejects a tier requiring zero approvals, so
+        // a request arrives at `Approved` holding exactly the threshold and never
+        // more. Removing one always drops it below.
+        //
+        // `eligibleAt` is untouched: it is a proposal-time clock, and restarting
+        // it here would let a single approver extend the timelock at will.
+        if (r.state == RequestState.Approved) {
+            r.state = RequestState.Proposed;
+        }
+
+        emit PaymentApprovalRevoked(requestId, msg.sender, r.approvals, r.requiredApprovals);
     }
 
     /// @notice Withdraws a request before it is dispatched.
@@ -346,7 +445,16 @@ contract PaymentController {
         }
 
         PolicyEngine.Tier memory tier = POLICY_ENGINE.resolveTier(t.policyId, amountUsd);
-        if (r.approvals < tier.requiredApprovals) revert InsufficientApprovals(r.approvals, tier.requiredApprovals);
+
+        // Counted by re-checking who approved, not by reading back how many did.
+        // An approval is authority borrowed from a role, and the role can be
+        // taken away between approving and dispatching — which is exactly what a
+        // policy admin does on discovering that an approver is compromised.
+        // Trusting the stored count would let that approver's vote carry the
+        // payment anyway, and it is the same grandfathering this function
+        // re-runs every other rule to avoid.
+        uint8 valid = _validApprovals(requestId, t.policyId);
+        if (valid < tier.requiredApprovals) revert InsufficientApprovals(valid, tier.requiredApprovals);
 
         _requireWindowFits(r.treasuryId, t.policyId, amountUsd);
 
@@ -382,20 +490,62 @@ contract PaymentController {
 
         emit PaymentDispatched(requestId, sequence, firstLedgerSequence, lastLedgerSequence, feeDrops, digest);
 
-        instructionSender.requestSignature{value: msg.value}(
-            IAegisInstructionSender.SignRequest({
+        // Which signer the payment goes to is read here rather than at proposal,
+        // for the same reason as everything else in this function: a treasury
+        // that moved to k-of-n after this request was approved must pay by
+        // quorum, and one that has not must not be asked to.
+        if (TREASURY_REGISTRY.signingIsQuorum(r.treasuryId)) {
+            _dispatchToQuorum(requestId, r, t, tier.requiredApprovals, digest);
+        } else {
+            instructionSender.requestSignature{value: msg.value}(
+                IAegisInstructionSender.SignRequest({
+                    requestId: requestId,
+                    treasuryId: r.treasuryId,
+                    destinationAccountId: r.destinationAccountId,
+                    destinationTag: r.destinationTag,
+                    amountDrops: r.amountDrops,
+                    sequence: sequence,
+                    lastLedgerSequence: lastLedgerSequence,
+                    feeDrops: feeDrops,
+                    policyDigest: digest
+                }),
+                POLICY_ENGINE.guardiansOf(t.policyId),
+                tier.requiredApprovals
+            );
+        }
+    }
+
+    /// @dev Sends the k-of-n signing instruction and records what it will take
+    /// to satisfy it. Split out because `dispatch` was already at the limit of
+    /// what one stack frame holds.
+    function _dispatchToQuorum(
+        uint256 requestId,
+        PaymentRequest storage r,
+        TreasuryRegistry.Treasury memory t,
+        uint8 requiredApprovals,
+        bytes32 digest
+    ) private {
+        bytes32 multiDigest = _multiSignDigest(digest, t.xrplAccountId);
+
+        r.multiSignDigest = multiDigest;
+        r.quorumRequired = TREASURY_REGISTRY.quorumOf(r.treasuryId);
+
+        instructionSender.requestMultiSignature{value: msg.value}(
+            IAegisInstructionSender.MultiSignRequest({
                 requestId: requestId,
                 treasuryId: r.treasuryId,
+                sourceAccountId: t.xrplAccountId,
                 destinationAccountId: r.destinationAccountId,
                 destinationTag: r.destinationTag,
                 amountDrops: r.amountDrops,
-                sequence: sequence,
-                lastLedgerSequence: lastLedgerSequence,
-                feeDrops: feeDrops,
-                policyDigest: digest
+                sequence: r.sequence,
+                lastLedgerSequence: r.lastLedgerSequence,
+                feeDrops: r.feeDrops,
+                policyDigest: digest,
+                multiSignDigest: multiDigest
             }),
             POLICY_ENGINE.guardiansOf(t.policyId),
-            tier.requiredApprovals
+            requiredApprovals
         );
     }
 
@@ -411,6 +561,82 @@ contract PaymentController {
         if (r.state != RequestState.Dispatched) revert WrongState(r.state, RequestState.Dispatched);
         r.state = RequestState.Signed;
         emit PaymentSigned(requestId, signedBlob, txHash);
+    }
+
+    /// @notice Records one enclave's share of a k-of-n signature.
+    /// @dev Two checks, and neither is about trusting the relayer. The key must
+    /// derive to an account in the treasury's signer list, because a signature
+    /// from anywhere else is one XRPL would not count; and the same signer
+    /// cannot contribute twice, because a duplicate would inflate an apparent
+    /// quorum the ledger will not honour.
+    ///
+    /// What is deliberately not checked is the signature itself. Verifying it
+    /// means secp256k1 over a SHA-512 half, and there is no precompile for
+    /// SHA-512 — so a relayer can submit a share that is well-formed and wrong.
+    /// The cost of that is bounded and already the cost of the relaying role:
+    /// the assembled transaction is refused by XRPL, the payment is proven
+    /// absent, and its window spend is released. It cannot move money, because
+    /// nothing here can — settlement is only ever an FDC proof.
+    /// @param requestId The request.
+    /// @param signerPubKey The signing machine's compressed public key.
+    /// @param signature The DER-encoded signature over the multi-signing hash.
+    function recordPartialSignature(uint256 requestId, bytes calldata signerPubKey, bytes calldata signature) external {
+        if (msg.sender != address(instructionSender)) revert NotInstructionSender();
+        PaymentRequest storage r = _requireRequest(requestId);
+        if (r.quorumRequired == 0) revert NotAQuorumPayment(requestId);
+        if (signerPubKey.length == 0 || signature.length == 0) revert EmptySignature(requestId);
+
+        bytes32 signerAccountId = bytes32(XrplAddress.accountIdFromPubKey(signerPubKey));
+
+        // A machine whose result arrives after the quorum closed is late, not
+        // wrong. Reverting would make the relayer's transaction fail for having
+        // done its job, so the share is recorded as ignored and dropped.
+        if (r.state == RequestState.Signed) {
+            emit PartialSignatureIgnored(requestId, signerAccountId);
+            return;
+        }
+        if (r.state != RequestState.Dispatched) revert WrongState(r.state, RequestState.Dispatched);
+
+        if (!TREASURY_REGISTRY.isSigner(r.treasuryId, signerAccountId)) {
+            revert NotATreasurySigner(r.treasuryId, signerAccountId);
+        }
+        if (_hasPartiallySigned[requestId][signerAccountId]) {
+            revert AlreadyPartiallySigned(requestId, signerAccountId);
+        }
+
+        _hasPartiallySigned[requestId][signerAccountId] = true;
+        _partialSignatures[requestId].push(
+            PartialSignature({signerAccountId: signerAccountId, signerPubKey: signerPubKey, signature: signature})
+        );
+
+        // Bounded by the signer set, which TreasuryRegistry caps at MAX_SIGNERS.
+        uint8 collected = uint8(_partialSignatures[requestId].length);
+        emit PaymentPartiallySigned(requestId, signerAccountId, signerPubKey, signature, collected);
+
+        if (collected >= r.quorumRequired) {
+            r.state = RequestState.Signed;
+            emit PaymentMultiSigned(requestId, r.treasuryId, collected, r.quorumRequired);
+        }
+    }
+
+    /// @notice The shares collected towards a request's k-of-n signature.
+    /// @dev This plus the request's own fields is everything an assembler needs.
+    /// It holds no authority: every share already covers the whole transaction,
+    /// so reordering, dropping or forging one produces a blob XRPL rejects
+    /// rather than a payment nobody authorised.
+    /// @param requestId The request.
+    /// @return The collected shares.
+    function partialSignaturesOf(uint256 requestId) external view returns (PartialSignature[] memory) {
+        _requireRequest(requestId);
+        return _partialSignatures[requestId];
+    }
+
+    /// @notice How many shares a request has collected.
+    /// @param requestId The request.
+    /// @return The count.
+    function partialSignatureCount(uint256 requestId) external view returns (uint256) {
+        _requireRequest(requestId);
+        return _partialSignatures[requestId].length;
     }
 
     /// @notice Marks a request settled after an FDC proof verified the payment.
@@ -462,6 +688,30 @@ contract PaymentController {
     /// @return True if it approved.
     function hasApproved(uint256 requestId, address approver) external view returns (bool) {
         return _approved[requestId][approver];
+    }
+
+    /// @notice Every address whose approval currently stands on a request.
+    /// @dev Withdrawn approvals are removed, so this is the live set rather than
+    /// a history. The history is the `PaymentApproved` and
+    /// `PaymentApprovalRevoked` event stream.
+    /// @param requestId The request.
+    /// @return The approvers, in no particular order.
+    function approversOf(uint256 requestId) external view returns (address[] memory) {
+        return _approvers[requestId];
+    }
+
+    /// @notice How many of a request's approvals still come from an address that
+    /// holds `ROLE_APPROVER`.
+    /// @dev This is the figure `dispatch` tests, and it can be lower than
+    /// `getRequest().approvals` — an approver whose role was revoked still
+    /// occupies a slot in the count but no longer carries authority. A dashboard
+    /// showing only the raw count would tell an operator a payment is ready when
+    /// the contract is about to refuse it.
+    /// @param requestId The request.
+    /// @return The number of approvals still backed by the approver role.
+    function validApprovals(uint256 requestId) external view returns (uint8) {
+        PaymentRequest storage r = _requireRequest(requestId);
+        return _validApprovals(requestId, TREASURY_REGISTRY.policyIdOf(r.treasuryId));
     }
 
     /// @notice The id the next request will receive.
@@ -542,6 +792,23 @@ contract PaymentController {
 
     /// @dev Reads XRP/USD and converts drops to an 18-decimal USD figure. A feed
     /// older than MAX_PRICE_AGE reverts; there is no cached fallback anywhere.
+    /// @notice The digest binding a policy digest to the account it authorises a
+    /// payment from.
+    /// @dev Public so the Go side has one definition to be validated against
+    /// rather than two, and so an approver can check what an enclave will be
+    /// asked to prove.
+    /// @param policyDigestValue The payment's policy digest.
+    /// @param sourceAccountId The treasury's XRPL AccountID, left-aligned.
+    /// @return The digest.
+    function multiSignDigest(bytes32 policyDigestValue, bytes32 sourceAccountId) external pure returns (bytes32) {
+        return _multiSignDigest(policyDigestValue, sourceAccountId);
+    }
+
+    /// @dev keccak256(abi.encode(policyDigest, sourceAccountId)).
+    function _multiSignDigest(bytes32 policyDigestValue, bytes32 sourceAccountId) private pure returns (bytes32) {
+        return keccak256(abi.encode(policyDigestValue, sourceAccountId));
+    }
+
     function _amountUsd(uint64 amountDrops) private returns (uint256) {
         (uint256 value, int8 decimals, uint64 ts) = FTSO.getFeedById(XRP_USD_FEED);
         if (value == 0) revert InvalidPrice();
@@ -617,6 +884,50 @@ contract PaymentController {
         entries[idx].amountUsd = 0;
         r.committedUsd = 0;
         emit WindowSpendReleased(r.treasuryId, requestId, amount);
+    }
+
+    /// @dev Counts approvals still backed by `ROLE_APPROVER` on `policyId`.
+    ///
+    /// The loop is bounded by the request's `requiredApprovals`: `approve`
+    /// refuses any state but `Proposed`, and reaching the threshold is what
+    /// leaves that state, so the array can never grow past it. Withdrawing and
+    /// re-approving moves within that bound rather than above it. A policy
+    /// therefore sets its own gas cost here when it chooses a threshold, which
+    /// is the only place the cost is bounded by something a caller controls.
+    function _validApprovals(uint256 requestId, uint256 policyId) private view returns (uint8 valid) {
+        address[] storage approvers = _approvers[requestId];
+        uint8 role = POLICY_ENGINE.ROLE_APPROVER();
+        uint256 length = approvers.length;
+        for (uint256 i = 0; i < length; ++i) {
+            if (POLICY_ENGINE.hasRole(policyId, approvers[i], role)) {
+                unchecked {
+                    ++valid;
+                }
+            }
+        }
+    }
+
+    /// @dev Drops one approver from the live set. Order carries no meaning, so
+    /// the last entry fills the gap rather than shifting the tail.
+    ///
+    /// Reaching the end without a match reverts, for the same reason
+    /// `_releaseWindow` refuses to release a window entry it cannot find: the
+    /// `_approved` flag and this array are two records of one fact, and the
+    /// caller has already read `true` from the first. If they ever disagree, the
+    /// count would drop while the address kept its slot, and `dispatch` would
+    /// then weigh an approval nobody holds. A revert keeps that visible instead
+    /// of letting the two records drift apart in silence.
+    function _removeApprover(uint256 requestId, address approver) private {
+        address[] storage approvers = _approvers[requestId];
+        uint256 length = approvers.length;
+        for (uint256 i = 0; i < length; ++i) {
+            if (approvers[i] == approver) {
+                approvers[i] = approvers[length - 1];
+                approvers.pop();
+                return;
+            }
+        }
+        revert ApproverEntryMissing(requestId, approver);
     }
 
     function _requireRequest(uint256 requestId) private view returns (PaymentRequest storage r) {

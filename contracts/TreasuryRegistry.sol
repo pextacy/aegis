@@ -33,6 +33,36 @@ contract TreasuryRegistry {
         bool sequenceConfirmed; // true once XRPL has consumed a sequence for this treasury
     }
 
+    /// @notice How far a treasury has got towards k-of-n signing.
+    /// @dev The order is the only order XRPL permits. A signer list cannot be
+    /// installed before there are keys to put in it, and a master key cannot be
+    /// retired before something else can authorise — XRPL refuses that outright,
+    /// which is what would leave an account nothing could ever sign for.
+    enum SignerSetState {
+        None,
+        Collecting,
+        Ready,
+        Installed,
+        Locked
+    }
+
+    /// @notice A treasury's k-of-n arrangement.
+    /// @dev `installTxHash` and `retireTxHash` are the XRPL transactions that
+    /// made each step real. They are recorded rather than proven: no FDC
+    /// attestation type covers a SignerListSet, and the failure mode of a wrong
+    /// claim is a payment XRPL refuses rather than one it should have refused.
+    /// See `confirmSignerListInstalled`.
+    struct SignerSet {
+        uint8 quorum;
+        uint8 signerCount;
+        SignerSetState state;
+        bytes32 installTxHash;
+        bytes32 retireTxHash;
+    }
+
+    /// @notice The most signers XRPL accepts on one account.
+    uint8 public constant MAX_SIGNERS = 32;
+
     /// @notice A pending governed change to a treasury.
     struct Amendment {
         uint256 treasuryId;
@@ -62,6 +92,10 @@ contract TreasuryRegistry {
     mapping(uint256 amendmentId => Amendment) private _amendments;
     mapping(uint256 amendmentId => mapping(address approver => bool)) private _amendmentApproved;
 
+    mapping(uint256 treasuryId => SignerSet) private _signerSets;
+    mapping(uint256 treasuryId => bytes32[]) private _signerAccounts;
+    mapping(uint256 treasuryId => mapping(bytes32 signerAccountId => bool)) private _isSigner;
+
     /// @notice Emitted when a treasury is reserved. Its XRPL account does not exist yet.
     event TreasuryCreated(uint256 indexed treasuryId, uint256 indexed policyId, address indexed creator);
     /// @notice Emitted once per treasury, when its XRPL account is bound.
@@ -87,6 +121,19 @@ contract TreasuryRegistry {
     event InitialSequenceSet(uint256 indexed treasuryId, uint32 sequence, address indexed setBy);
     /// @notice Emitted when a collaborating contract address is wired.
     event ContractWired(bytes32 indexed what, address indexed addr);
+
+    /// @notice Emitted when a treasury commits to a k-of-n arrangement.
+    event SignerSetConfigured(uint256 indexed treasuryId, uint8 quorum, uint8 signerCount);
+    /// @notice Emitted for each enclave signer key bound to a treasury.
+    event SignerKeyBound(
+        uint256 indexed treasuryId, bytes32 indexed signerAccountId, string signerAddress, uint8 bound
+    );
+    /// @notice Emitted when every signer key a treasury asked for is bound.
+    event SignerSetReady(uint256 indexed treasuryId, uint8 quorum, uint8 signerCount);
+    /// @notice Emitted when the signer list is recorded as live on XRPL.
+    event SignerListInstalled(uint256 indexed treasuryId, bytes32 xrplTxHash);
+    /// @notice Emitted when the treasury's master key is recorded as retired.
+    event MasterKeyRetired(uint256 indexed treasuryId, bytes32 xrplTxHash);
 
     error TreasuryNotFound(uint256 treasuryId);
     error AmendmentNotFound(uint256 amendmentId);
@@ -119,6 +166,36 @@ contract TreasuryRegistry {
 
     /// @notice Zero is the "not yet known" marker, so it is not a settable value.
     error InitialSequenceRequired();
+
+    /// @notice A treasury commits to one k-of-n arrangement, once.
+    error SignerSetAlreadyConfigured(uint256 treasuryId);
+
+    /// @notice The step being attempted needs a signer set that does not exist.
+    error SignerSetNotConfigured(uint256 treasuryId);
+
+    /// @notice The signer set is not in the state this step requires.
+    error WrongSignerSetState(SignerSetState have, SignerSetState want);
+
+    /// @notice A quorum of zero authorises anything; one above the signer count
+    /// authorises nothing. Both leave a treasury that cannot be governed.
+    error InvalidQuorum(uint8 quorum, uint8 signerCount);
+
+    /// @notice More signers than XRPL will hold on one account.
+    error TooManySigners(uint8 signerCount, uint8 max);
+
+    /// @notice The same enclave key cannot occupy two slots in one quorum.
+    error DuplicateSignerKey(uint256 treasuryId, bytes32 signerAccountId);
+
+    /// @notice XRPL refuses a signer list containing the account itself, so a
+    /// key bound here would be one that could never count.
+    error SignerIsTreasuryAccount(uint256 treasuryId);
+
+    /// @notice Every signer slot is already filled.
+    error SignerSetComplete(uint256 treasuryId);
+
+    /// @notice A step that happened on XRPL is recorded with the transaction
+    /// that did it, so the claim can be checked against the ledger.
+    error XrplTxHashRequired();
 
     /// @param policyEngine The policy engine to read rules and roles from.
     constructor(PolicyEngine policyEngine) {
@@ -189,6 +266,184 @@ contract TreasuryRegistry {
         t.xrplAddress = derived;
 
         emit XrplAccountBound(treasuryId, bytes32(accountId), derived);
+    }
+
+    /// @notice Commits a treasury to k-of-n signing.
+    /// @dev This is the decision that removes the limitation v1 states openly:
+    /// with one machine holding one key, losing the machine loses the treasury.
+    /// Afterwards, k enclaves out of n must each independently check the policy
+    /// digest before the account can pay, and losing any n − k of them costs
+    /// nothing.
+    ///
+    /// It is set once and never changed. Re-quorumming a live treasury means
+    /// replacing a signer list on XRPL while payments are in flight, and the
+    /// window between the two states is one where a dispatched payment can no
+    /// longer be signed by the set it was dispatched to. A new arrangement is a
+    /// new treasury.
+    /// @param treasuryId The treasury.
+    /// @param quorum How many signatures a payment needs.
+    /// @param signerCount How many enclave keys the signer list will hold.
+    function configureSignerSet(uint256 treasuryId, uint8 quorum, uint8 signerCount) external {
+        Treasury storage t = _requireTreasury(treasuryId);
+        if (!POLICY_ENGINE.hasRole(t.policyId, msg.sender, POLICY_ENGINE.ROLE_POLICY_ADMIN())) {
+            revert NotPolicyAdmin(t.policyId, msg.sender);
+        }
+        if (t.frozen) revert TreasuryFrozenError(treasuryId);
+        if (t.xrplAccountId == bytes32(0)) revert AccountNotBound(treasuryId);
+
+        SignerSet storage s = _signerSets[treasuryId];
+        if (s.state != SignerSetState.None) revert SignerSetAlreadyConfigured(treasuryId);
+
+        if (signerCount > MAX_SIGNERS) revert TooManySigners(signerCount, MAX_SIGNERS);
+        if (quorum == 0 || quorum > signerCount) revert InvalidQuorum(quorum, signerCount);
+
+        s.quorum = quorum;
+        s.signerCount = signerCount;
+        s.state = SignerSetState.Collecting;
+
+        emit SignerSetConfigured(treasuryId, quorum, signerCount);
+    }
+
+    /// @notice Binds one enclave's signer key to a treasury.
+    /// @dev Verified exactly as `bindXrplAccount` verifies the master key: the
+    /// AccountID is derived on-chain from the key and the address re-encoded
+    /// from it, so a proxy reporting an address that does not belong to the key
+    /// it holds is refused here rather than discovered when a quorum will not
+    /// form.
+    /// @param treasuryId The treasury.
+    /// @param compressedPubKey The 33-byte compressed secp256k1 public key.
+    /// @param classicAddress The address the enclave reported.
+    function bindSignerKey(uint256 treasuryId, bytes calldata compressedPubKey, string calldata classicAddress)
+        external
+    {
+        if (msg.sender != instructionSender) revert NotInstructionSender();
+        Treasury storage t = _requireTreasury(treasuryId);
+
+        SignerSet storage s = _signerSets[treasuryId];
+        if (s.state == SignerSetState.None) revert SignerSetNotConfigured(treasuryId);
+        if (s.state != SignerSetState.Collecting) {
+            revert WrongSignerSetState(s.state, SignerSetState.Collecting);
+        }
+
+        bytes32[] storage signers = _signerAccounts[treasuryId];
+        if (signers.length >= s.signerCount) revert SignerSetComplete(treasuryId);
+
+        (bytes20 accountId, string memory derived) = XrplAddress.deriveAccount(compressedPubKey);
+        if (keccak256(bytes(derived)) != keccak256(bytes(classicAddress))) {
+            revert AddressMismatch(derived, classicAddress);
+        }
+
+        bytes32 signerAccountId = bytes32(accountId);
+        if (signerAccountId == t.xrplAccountId) revert SignerIsTreasuryAccount(treasuryId);
+        if (_isSigner[treasuryId][signerAccountId]) revert DuplicateSignerKey(treasuryId, signerAccountId);
+
+        _isSigner[treasuryId][signerAccountId] = true;
+        signers.push(signerAccountId);
+
+        uint8 bound = uint8(signers.length);
+        emit SignerKeyBound(treasuryId, signerAccountId, derived, bound);
+
+        if (bound == s.signerCount) {
+            s.state = SignerSetState.Ready;
+            emit SignerSetReady(treasuryId, s.quorum, s.signerCount);
+        }
+    }
+
+    /// @notice Records that the treasury's signer list is live on XRPL.
+    /// @dev This is the one step in the k-of-n path that is asserted rather than
+    /// proven, and it is worth being precise about why that is acceptable. No
+    /// FDC attestation type covers a `SignerListSet`, so there is nothing to
+    /// verify against; what the caller supplies is the XRPL transaction hash,
+    /// which anyone can check against the ledger from the audit log.
+    ///
+    /// A false claim does not authorise a payment. It flips dispatch to the
+    /// k-of-n path, where the enclaves sign a transaction XRPL then refuses for
+    /// want of a signer list — a payment that does not land, proven absent, its
+    /// window spend released. The failure is closed, which is why an assertion
+    /// is tolerable here and would not be anywhere a payment could go out on it.
+    /// @param treasuryId The treasury.
+    /// @param xrplTxHash The XRPL transaction that installed the list.
+    function confirmSignerListInstalled(uint256 treasuryId, bytes32 xrplTxHash) external {
+        Treasury storage t = _requireTreasury(treasuryId);
+        if (!POLICY_ENGINE.hasRole(t.policyId, msg.sender, POLICY_ENGINE.ROLE_POLICY_ADMIN())) {
+            revert NotPolicyAdmin(t.policyId, msg.sender);
+        }
+        if (xrplTxHash == bytes32(0)) revert XrplTxHashRequired();
+
+        SignerSet storage s = _signerSets[treasuryId];
+        if (s.state != SignerSetState.Ready) revert WrongSignerSetState(s.state, SignerSetState.Ready);
+
+        s.state = SignerSetState.Installed;
+        s.installTxHash = xrplTxHash;
+
+        emit SignerListInstalled(treasuryId, xrplTxHash);
+    }
+
+    /// @notice Records that the treasury's master key has been retired on XRPL.
+    /// @dev Until this happens the signer list is an additional authority rather
+    /// than the only one, and the machine that created the account could still
+    /// pay alone. Dispatch already routes through the quorum from `Installed`,
+    /// so this step changes no behaviour here — it records the point at which
+    /// the guarantee stops depending on one machine behaving.
+    /// @param treasuryId The treasury.
+    /// @param xrplTxHash The XRPL transaction that set asfDisableMaster.
+    function confirmMasterKeyRetired(uint256 treasuryId, bytes32 xrplTxHash) external {
+        Treasury storage t = _requireTreasury(treasuryId);
+        if (!POLICY_ENGINE.hasRole(t.policyId, msg.sender, POLICY_ENGINE.ROLE_POLICY_ADMIN())) {
+            revert NotPolicyAdmin(t.policyId, msg.sender);
+        }
+        if (xrplTxHash == bytes32(0)) revert XrplTxHashRequired();
+
+        SignerSet storage s = _signerSets[treasuryId];
+        if (s.state != SignerSetState.Installed) revert WrongSignerSetState(s.state, SignerSetState.Installed);
+
+        s.state = SignerSetState.Locked;
+        s.retireTxHash = xrplTxHash;
+
+        emit MasterKeyRetired(treasuryId, xrplTxHash);
+    }
+
+    /// @notice Reads a treasury's k-of-n arrangement.
+    /// @param treasuryId The treasury.
+    /// @return The stored signer set. A zeroed one means single-key signing.
+    function getSignerSet(uint256 treasuryId) external view returns (SignerSet memory) {
+        _requireTreasury(treasuryId);
+        return _signerSets[treasuryId];
+    }
+
+    /// @notice The enclave signer accounts bound to a treasury.
+    /// @param treasuryId The treasury.
+    /// @return The signer AccountIDs, left-aligned in bytes32.
+    function signersOf(uint256 treasuryId) external view returns (bytes32[] memory) {
+        _requireTreasury(treasuryId);
+        return _signerAccounts[treasuryId];
+    }
+
+    /// @notice Whether an AccountID is one of a treasury's bound signers.
+    /// @param treasuryId The treasury.
+    /// @param signerAccountId The candidate signer.
+    /// @return True if it is in the set.
+    function isSigner(uint256 treasuryId, bytes32 signerAccountId) external view returns (bool) {
+        return _isSigner[treasuryId][signerAccountId];
+    }
+
+    /// @notice Whether payments from a treasury are authorised by quorum.
+    /// @dev True from the moment the signer list is live, not from the moment
+    /// the master key is retired. The list is what XRPL checks a multi-signed
+    /// transaction against; retiring the key removes the alternative, which is a
+    /// separate and later fact.
+    /// @param treasuryId The treasury.
+    /// @return True if dispatch should collect a quorum rather than one signature.
+    function signingIsQuorum(uint256 treasuryId) external view returns (bool) {
+        SignerSetState state = _signerSets[treasuryId].state;
+        return state == SignerSetState.Installed || state == SignerSetState.Locked;
+    }
+
+    /// @notice How many signatures a treasury's payments require.
+    /// @param treasuryId The treasury.
+    /// @return The quorum, or zero if the treasury signs with one key.
+    function quorumOf(uint256 treasuryId) external view returns (uint8) {
+        return _signerSets[treasuryId].quorum;
     }
 
     /// @notice Freezes a treasury. One guardian, one transaction, no delay.
