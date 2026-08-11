@@ -401,11 +401,45 @@ The serialisation is not taken on trust either. Three vectors are pinned, all fe
 
 The test that matters most is `TestReferenceMultiSignaturesVerify`: two signatures produced by other software, over a transaction the network validated, verifying against the digest this code computes. That is what shows the `SMT\0` prefix, the empty `SigningPubKey` and the appended signer AccountID are XRPL's and not merely self-consistent — a sign-then-verify test could not show any of it. The appended AccountID has its own test as well, because without it every signer would sign identical bytes and one signature could be presented as another's, which turns k-of-n into one-of-n at the moment it matters.
 
+### What a 50-agent verification found, and what it cost
+
+The feature was checked by a fan-out of agents: real command runs, targeted
+probes each writing tests in its own worktree, and read-only adversarial review.
+Twenty-nine finished before the run hit a session limit. Two findings were real
+and both are now fixed.
+
+**The handover consumed sequences nobody recorded.** `SignerListSet` took one and
+the master key's retirement took the next, while `nextSequenceOf` still reported
+the original — confirmed on chain at the end of a full cycle. The first quorum
+payment reused a sequence its own signer list had spent, which on a real ledger
+is `tefPAST_SEQ`: a transaction that never reaches a ledger, so no proof exists
+that could advance past it. `requestSetup` now reads the sequence from the
+registry rather than taking it from a caller, and confirming a handover advances
+past what it consumed. The advance does not set `sequenceConfirmed`, because a
+handover is confirmed by assertion and only an FDC proof may close that door —
+so a wrong one stays correctable by `setInitialSequence`.
+
+**The script's assembly stage proved nothing.** It hand-built the Payment and
+omitted the Memos field the enclaves had signed over, so the blob it reported
+was one whose signatures did not verify. An agent proved it by verifying both
+shares with an independent curve library: false over the script's body, true
+over the same body plus the memo. The stage now drives the submitter's real
+entry point and reports how many shares verified rather than how many arrived.
+
+That second finding exposed a third worth having: the assembler verified
+nothing, so a relayer could publish a well-formed signature over nothing and
+XRPL would charge for the transaction it refused. `verifiedSigners` drops those
+before a fee is burnt. Switching it on failed four submitter tests immediately —
+they had been built on the reference vector's signatures over a memo-less
+payment, and had been passing precisely because nothing checked them.
+
 ### What is still outstanding
 
 - **`toProduction` and machine selection.** FCC hands out machines at random rather than by name, so the fan-out asks for as many as the signer set is sized for and a machine without a signer key refuses. That works when the extension has the machines the set was sized for. Addressing a specific one needs an interface Flare has not published, and it is the same class of limitation as `setExtensionId()` scanning the whole registry.
 - **The signer list's installation is recorded, not proven.** No FDC attestation type covers a `SignerListSet`, so a policy admin records the XRPL transaction hash and anyone can check it against the ledger from the audit log. A false claim is fail-closed: dispatch routes to a quorum, XRPL refuses for want of a list, the payment is proven absent and its window spend comes back.
-- **A k-of-n treasury has not settled on XRPL Testnet.** `./scripts/xrpl-settlement.sh` does that for the single-key path; the equivalent for a quorum needs three enclaves and a funded XRPL account, and is the natural next run.
+- **A k-of-n treasury has not settled on XRPL Testnet.** `./scripts/xrpl-settlement.sh` does that for the single-key path; the equivalent for a quorum needs three enclaves and a funded XRPL account, and is the natural next run. It is also what would put the sequence accounting above in front of a real ledger rather than a local chain.
+- **The multi-signed fee multiplier is not computed anywhere.** XRPL charges a multi-signed transaction base_fee × (1 + signatures), and `feeDrops` is still chosen by whoever calls `dispatch`. A fee that is too low is refused by the ledger — fail-closed, and recoverable through a non-existence proof — but nothing here works the number out. Raised by the verification and left open deliberately rather than guessed at.
+- **26 of the 55 verification agents did not finish**, having hit a session limit. The Solidity probes, most of the adversarial review and the synthesis pass are among them, so the absence of further findings is not evidence of their absence.
 
 ### Why the architecture already supports this
 
