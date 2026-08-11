@@ -67,6 +67,11 @@ python/.pytest_cache/
 
 docs/superpowers
 
+# Agent worktrees. `.claude/skills/` is committed — it is what makes the
+# scaffold's workflows discoverable — so this ignores the transient checkouts
+# only, not the directory they sit in.
+.claude/worktrees/
+
 notes/
 
 # Private deployment guide (SSH, redeploy instructions)
