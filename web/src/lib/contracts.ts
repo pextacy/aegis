@@ -87,6 +87,10 @@ export type SignerSet = {
   quorum: number;
   signerCount: number;
   state: number;
+  /** The XRPL sequence the SignerListSet consumed. */
+  installSequence: number;
+  /** The XRPL sequence the master key's retirement consumed. */
+  retireSequence: number;
   /** The XRPL transaction that installed the signer list, once recorded. */
   installTxHash: Hex;
   /** The XRPL transaction that retired the master key, once recorded. */

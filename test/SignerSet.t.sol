@@ -20,6 +20,11 @@ contract SignerSetTest is AegisFixture {
     bytes constant SIGNER_C_KEY = hex"03BC08FCDE76B929B00A625B4E83B73E8CA83F72195E0B52BCBDC668CF37C4A92B";
     string constant SIGNER_C_ADDR = "rDseVXFK1SkWhFH65cqAxf3HmvHCF6b94t";
 
+    /// @dev A second real key, so a fresh treasury can be bound without reusing
+    /// the fixture's.
+    bytes constant OTHER_PUBKEY = hex"02B4632D08485FF1DF2DB55B9DAFD23347D1C47A457072A1E87BE26896549A8737";
+    string constant OTHER_CLASSIC = "rN7XSxu7VypPUne8GXRr2syxbNj4WMHuem";
+
     bytes32 constant INSTALL_TX = keccak256("SignerListSet on XRPL");
     bytes32 constant RETIRE_TX = keccak256("AccountSet asfDisableMaster on XRPL");
 
@@ -250,6 +255,104 @@ contract SignerSetTest is AegisFixture {
         // The quorum was already in force before this step; what changes is that
         // it is no longer one machine's good behaviour keeping it that way.
         assertTrue(registry.signingIsQuorum(treasuryId));
+    }
+
+    // --- the sequences the handover consumes -------------------------------
+
+    /// @dev The defect this section exists for. Both handover transactions
+    /// consume an XRPL sequence exactly as a payment does. A registry that did
+    /// not know about them would sign the treasury's first quorum payment
+    /// against a number the ledger had already passed, and `tefPAST_SEQ` never
+    /// reaches a ledger — so no proof exists that could move the treasury on.
+    function test_installingTheListConsumesASequence() public {
+        _readySet(2, 3);
+        uint32 before = registry.nextSequenceOf(treasuryId);
+
+        vm.prank(admin);
+        registry.confirmSignerListInstalled(treasuryId, INSTALL_TX);
+
+        assertEq(registry.nextSequenceOf(treasuryId), before + 1, "the list consumed one");
+        assertEq(registry.getSignerSet(treasuryId).installSequence, before, "and the set records which");
+    }
+
+    function test_retiringTheMasterKeyConsumesTheNextSequence() public {
+        _installed(2, 3);
+        uint32 before = registry.nextSequenceOf(treasuryId);
+
+        vm.prank(admin);
+        registry.confirmMasterKeyRetired(treasuryId, RETIRE_TX);
+
+        assertEq(registry.nextSequenceOf(treasuryId), before + 1);
+        assertEq(registry.getSignerSet(treasuryId).retireSequence, before);
+    }
+
+    /// @dev The regression, stated end to end: after a full handover the first
+    /// quorum payment must be dispatched two past where the treasury started.
+    function test_theFirstQuorumPaymentSkipsBothHandoverSequences() public {
+        uint32 start = registry.nextSequenceOf(treasuryId);
+        _installed(2, 3);
+        vm.prank(admin);
+        registry.confirmMasterKeyRetired(treasuryId, RETIRE_TX);
+
+        uint256 requestId = proposeAndApprove(dropsForUsd(500e18), 1);
+        vm.prank(proposer);
+        controller.dispatch(requestId, 100, 200, 12);
+
+        assertEq(
+            controller.getRequest(requestId).sequence,
+            start + 2,
+            "the payment must not reuse a sequence the handover already spent"
+        );
+    }
+
+    /// @dev A handover is confirmed by an admin supplying a transaction hash,
+    /// which is an assertion rather than a proof. So the advance it causes has
+    /// to stay correctable — only an FDC proof may close that door.
+    function test_aHandoverAdvanceStaysCorrectable() public {
+        _installed(2, 3);
+        vm.prank(admin);
+        registry.confirmMasterKeyRetired(treasuryId, RETIRE_TX);
+
+        assertFalse(
+            registry.getTreasury(treasuryId).sequenceConfirmed,
+            "an asserted advance must not claim XRPL proved anything"
+        );
+
+        // So an admin who finds the ledger disagrees can put it right.
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE + 9);
+        assertEq(registry.nextSequenceOf(treasuryId), START_SEQUENCE + 9);
+    }
+
+    /// @dev And a settled payment still closes it, exactly as before.
+    function test_aProvenOutcomeStillFixesTheStartingPoint() public {
+        uint256 requestId = _dispatchedToQuorum(2, 3);
+        _recordShare(requestId, SIGNER_A_KEY);
+        _recordShare(requestId, SIGNER_B_KEY);
+
+        registry.advanceSequence(treasuryId, controller.getRequest(requestId).sequence);
+
+        assertTrue(registry.getTreasury(treasuryId).sequenceConfirmed);
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.SequenceAlreadyConfirmed.selector, treasuryId));
+        vm.prank(admin);
+        registry.setInitialSequence(treasuryId, START_SEQUENCE);
+    }
+
+    /// @dev A treasury whose account sequence is unknown cannot hand over
+    /// either, for the same reason it cannot pay.
+    function test_theHandoverIsRefusedBeforeTheSequenceIsKnown() public {
+        vm.startPrank(admin);
+        uint256 fresh = registry.createTreasury(policyId);
+        vm.stopPrank();
+        registry.bindXrplAccount(fresh, OTHER_PUBKEY, OTHER_CLASSIC);
+
+        vm.prank(admin);
+        registry.configureSignerSet(fresh, 1, 1);
+        registry.bindSignerKey(fresh, SIGNER_A_KEY, SIGNER_A_ADDR);
+
+        vm.expectRevert(abi.encodeWithSelector(TreasuryRegistry.SequenceNotInitialised.selector, fresh));
+        vm.prank(admin);
+        registry.confirmSignerListInstalled(fresh, INSTALL_TX);
     }
 
     // --- dispatching to a quorum ------------------------------------------

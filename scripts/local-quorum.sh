@@ -240,8 +240,8 @@ step "SETUP — the signer list, then the master key's retirement"
 # Only the machine that ran KEYGEN holds the master key. The other two hold
 # signer keys for the same treasury and must refuse for want of the right one:
 # that separation is the reason the keystore keeps two maps.
-send "$SENDER" "requestSetup(uint256,uint8,uint32,uint32,uint64)(bytes32)" \
-    1 0 "$START_SEQUENCE" 900000 12 >/dev/null || die "requestSetup(signer list) failed"
+send "$SENDER" "requestSetup(uint256,uint8,uint32,uint64)(bytes32)" \
+    1 0 900000 12 >/dev/null || die "requestSetup(signer list) failed"
 SETUP_ID="$(last_instruction_id SETUP)"
 SETUP_MSG="$(last_message)"
 
@@ -278,8 +278,8 @@ send "$REGISTRY" "confirmSignerListInstalled(uint256,bytes32)" 1 "$LIST_TX" >/de
 QUORUM_NOW="$(call "$REGISTRY" "signingIsQuorum(uint256)(bool)" 1)"
 [[ "$QUORUM_NOW" == "true" ]] || die "the treasury is not signing by quorum"
 
-send "$SENDER" "requestSetup(uint256,uint8,uint32,uint32,uint64)(bytes32)" \
-    1 1 "$((START_SEQUENCE + 1))" 900000 12 >/dev/null || die "requestSetup(retire) failed"
+send "$SENDER" "requestSetup(uint256,uint8,uint32,uint64)(bytes32)" \
+    1 1 900000 12 >/dev/null || die "requestSetup(retire) failed"
 RETIRE_ID="$(last_instruction_id SETUP)"
 
 RESULT="$(post_action 0 SETUP "$(last_message)")"
@@ -298,6 +298,15 @@ send "$SENDER" "submitSetupResult(bytes32,uint8,bytes,bytes32)" "$RETIRE_ID" 1 "
 send "$REGISTRY" "confirmMasterKeyRetired(uint256,bytes32)" 1 "$RETIRE_TX" >/dev/null \
     || die "confirmMasterKeyRetired failed"
 log "master key retired in $RETIRE_TX — the quorum is now the only authority"
+
+# Both handover transactions consumed an XRPL sequence. A registry that did not
+# know that would sign the first quorum payment against a number the ledger had
+# already passed, and tefPAST_SEQ never reaches a ledger — so no proof exists
+# that could move the treasury on.
+SEQ_NOW="$(call "$REGISTRY" "nextSequenceOf(uint256)(uint32)" 1 | awk '{print $1}')"
+[[ "$SEQ_NOW" == "$((START_SEQUENCE + 2))" ]] \
+    || die "the handover consumed two sequences but the registry is at $SEQ_NOW, expected $((START_SEQUENCE + 2))"
+log "registry advanced past both handover sequences: $SEQ_NOW"
 
 # --- 6. A payment, signed by two of three ----------------------------------
 
@@ -331,8 +340,13 @@ for i in 0 1; do
 done
 
 REQUEST_TUPLE="(uint256,bytes32,uint32,uint64,uint256,uint32,uint32,uint32,uint64,uint8,uint8,uint64,uint8,bytes32,address,uint256,uint256,bytes32,uint8)"
-STATE_FIELD="$(call "$CONTROLLER" "getRequest(uint256)($REQUEST_TUPLE)" 1 | tr -d '()' | awk -F', ' '{print $13}')"
+REQUEST_ROW="$(call "$CONTROLLER" "getRequest(uint256)($REQUEST_TUPLE)" 1 | tr -d '()')"
+STATE_FIELD="$(awk -F', ' '{print $13}' <<<"$REQUEST_ROW" | awk '{print $1}')"
+# cast annotates large numbers as "19574505 [1.957e7]"; keep the number.
+PAY_SEQUENCE="$(awk -F', ' '{print $6}' <<<"$REQUEST_ROW" | awk '{print $1}')"
 [[ "$STATE_FIELD" == "3" ]] || die "the request did not reach Signed (3); state was $STATE_FIELD"
+[[ "$PAY_SEQUENCE" == "$((START_SEQUENCE + 2))" ]] \
+    || die "the payment reused a handover sequence: signed at $PAY_SEQUENCE"
 log "request 1 is Signed on two of three shares"
 
 # The third machine answers late. It is a straggler, not a fault, so the
@@ -357,8 +371,13 @@ call "$CONTROLLER" "partialSignaturesOf(uint256)((bytes32,bytes,bytes)[])" 1 > "
 SOURCE_WORD="$(call "$REGISTRY" "getTreasury(uint256)((uint256,bytes32,string,uint256,bool,uint32,bool))" 1 \
     | tr -d '()' | awk -F', ' '{print $2}')"
 
+# Driven through the submitter's real entry point rather than a hand-built
+# payment. That matters: the enclaves signed a transaction carrying the request
+# memo, so an assembly that leaves it out produces a blob whose signatures do
+# not verify — and would look like a success.
 node --input-type=module -e "
 import { readFileSync } from 'node:fs';
+import { paymentFromRequest, toSigners, verifiedSigners } from '$PROJECT_DIR/submitter/dist/multisign.js';
 import { assembleMultisigned } from '$PROJECT_DIR/submitter/dist/serialize.js';
 
 const raw = readFileSync('$WORK/shares.raw', 'utf8');
@@ -366,34 +385,44 @@ const words = [...raw.matchAll(/0x[0-9a-fA-F]+/g)].map((m) => m[0]);
 // (accountId, pubKey, signature) per share, in the order the contract stored them.
 if (words.length !== 6) throw new Error('expected three fields for each of two shares, got ' + words.length);
 
-const buf = (hex) => Buffer.from(hex.slice(2), 'hex');
-const signers = [0, 3].map((i) => ({
-  account: buf(words[i]).subarray(0, 20),
-  signingPubKey: buf(words[i + 1]),
-  txnSignature: buf(words[i + 2]),
+const shares = [0, 3].map((i) => ({
+  signerAccountId: words[i],
+  signerPubKey: words[i + 1],
+  signature: words[i + 2],
 }));
 
-const { signedBlob, txHash } = assembleMultisigned({
-  account: buf('$SOURCE_WORD').subarray(0, 20),
-  destination: buf('0xaed2aca19c6f54926f8482648a694e7cb62baa22'),
-  amountDrops: 1000000n,
-  feeDrops: 12n,
-  sequence: $START_SEQUENCE,
-  lastLedgerSequence: 900000,
+const request = {
+  treasuryId: 1n,
+  destinationAccountId: '0xaed2aca19c6f54926f8482648a694e7cb62baa22' + '00'.repeat(12),
   destinationTag: 7,
-  flags: 0x80000000,
-}, signers);
+  amountDrops: 1000000n,
+  sequence: $PAY_SEQUENCE,
+  lastLedgerSequence: 900000,
+  feeDrops: 12n,
+  quorumRequired: 2,
+};
 
+const payment = paymentFromRequest(1n, request, '$SOURCE_WORD');
+const signers = toSigners(shares);
+
+// The check the whole stage exists for: every share must actually have signed
+// this transaction. Before this ran, a wrong assembly reported success.
+const verified = verifiedSigners(payment, signers);
+if (verified.length !== signers.length) {
+  throw new Error(verified.length + ' of ' + signers.length + ' shares verify against the assembled transaction');
+}
+
+const { signedBlob, txHash } = assembleMultisigned(payment, verified);
 const hex = signedBlob.toString('hex').toUpperCase();
 if (!hex.startsWith('120000')) throw new Error('not a Payment: ' + hex.slice(0, 12));
 if (!hex.includes('7300')) throw new Error('SigningPubKey is not the empty blob that selects the signer list');
-for (const s of signers) {
+for (const s of verified) {
   if (!hex.includes(s.account.toString('hex').toUpperCase())) throw new Error('a signer is missing from the blob');
 }
-console.log(JSON.stringify({ length: hex.length, txHash: txHash.toString('hex').toUpperCase() }));
+console.log(JSON.stringify({ length: hex.length, verified: verified.length, txHash: txHash.toString('hex').toUpperCase() }));
 " > "$SHARES_JSON" || die "assembly failed — run 'cd submitter && npm run build' first"
 
-log "assembled $(jq -r '.length' "$SHARES_JSON") hex chars, tx $(jq -r '.txHash' "$SHARES_JSON")"
+log "assembled $(jq -r '.length' "$SHARES_JSON") hex chars from $(jq -r '.verified' "$SHARES_JSON") verified shares, tx $(jq -r '.txHash' "$SHARES_JSON")"
 
 # --- 8. The two properties this all exists for -----------------------------
 

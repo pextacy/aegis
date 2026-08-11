@@ -183,6 +183,10 @@ contract AegisInstructionSender is IAegisInstructionSender {
     /// @notice A zero fee is not a transaction XRPL will accept.
     error ZeroFee();
 
+    /// @notice A handover transaction cannot be signed before the treasury knows
+    /// what sequence its XRPL account is at.
+    error SequenceNotInitialised(uint256 treasuryId);
+
     /// @notice Initializes the contract with registry addresses.
     /// @param _teeExtensionRegistry Address of the TEE extension registry.
     /// @param _teeMachineRegistry Address of the TEE machine registry.
@@ -412,18 +416,24 @@ contract AegisInstructionSender is IAegisInstructionSender {
     /// They are the keys the enclaves generated and the contract already
     /// verified against the addresses they claimed, so there is nothing for a
     /// caller to choose here.
+    /// @dev The sequence is read from the registry rather than taken from the
+    /// caller. A handover transaction consumes one exactly as a payment does, so
+    /// letting an operator choose it is how a treasury ends up signing against a
+    /// number XRPL has already passed — and a `tefPAST_SEQ` transaction never
+    /// reaches a ledger, so no proof exists that could move the treasury on.
     /// @param treasuryId The treasury.
     /// @param kind SETUP_KIND_SIGNER_LIST or SETUP_KIND_DISABLE_MASTER_KEY.
-    /// @param sequence The XRPL sequence the transaction consumes.
     /// @param lastLedgerSequence The ledger after which it expires.
     /// @param feeDrops The XRPL fee, in drops.
     /// @return instructionId The FCC instruction id.
-    function requestSetup(uint256 treasuryId, uint8 kind, uint32 sequence, uint32 lastLedgerSequence, uint64 feeDrops)
+    function requestSetup(uint256 treasuryId, uint8 kind, uint32 lastLedgerSequence, uint64 feeDrops)
         external
         payable
         returns (bytes32 instructionId)
     {
-        if (kind != SETUP_KIND_SIGNER_LIST && kind != SETUP_KIND_DISABLE_MASTER_KEY) revert UnknownSetupKind(kind);
+        if (kind != SETUP_KIND_SIGNER_LIST && kind != SETUP_KIND_DISABLE_MASTER_KEY) {
+            revert UnknownSetupKind(kind);
+        }
         if (lastLedgerSequence == 0) revert LastLedgerSequenceRequired();
         if (feeDrops == 0) revert ZeroFee();
 
@@ -450,6 +460,11 @@ contract AegisInstructionSender is IAegisInstructionSender {
             }
             signers = new bytes32[](0);
         }
+
+        // Read here rather than taken from the caller, and checked after the
+        // state machine so a wrong step is named as a wrong step.
+        uint32 sequence = t.nextSequence;
+        if (sequence == 0) revert SequenceNotInitialised(treasuryId);
 
         bytes32 digest = _setupDigest(treasuryId, kind, quorum, signers, sequence, lastLedgerSequence, feeDrops);
 

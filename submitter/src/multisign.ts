@@ -12,12 +12,14 @@
  * payment; it decides only how to spell what the contract already authorised.
  */
 
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { encodeAbiParameters, keccak256 } from "viem";
 import type { Address, Hex } from "viem";
 import { paymentControllerAbi, treasuryRegistryAbi } from "./abi.js";
 import type { Clients } from "./clients.js";
 import type { Config } from "./config.js";
-import { assembleMultisigned, TF_FULLY_CANONICAL_SIG } from "./serialize.js";
+import { log } from "./log.js";
+import { assembleMultisigned, multiSigningHash, TF_FULLY_CANONICAL_SIG } from "./serialize.js";
 import type { Payment, Signer } from "./serialize.js";
 import type { SignedPayment } from "./settle.js";
 
@@ -99,6 +101,31 @@ export function paymentFromRequest(requestId: bigint, request: QuorumRequest, so
 }
 
 /**
+ * Keeps the shares that actually signed this transaction.
+ *
+ * The contract cannot do this: verifying a share needs secp256k1 over a
+ * SHA-512 half and there is no SHA-512 precompile, so it checks only that the
+ * key belongs to a bound signer. That leaves one thing a relayer can do — submit
+ * a well-formed signature over nothing — and this is where it is caught.
+ *
+ * Catching it here matters because the alternative is not a rejected assembly
+ * but a burnt fee: XRPL charges for a transaction it refuses, and the sequence
+ * it consumed has to be recovered through a non-existence proof.
+ */
+export function verifiedSigners(payment: Payment, signers: readonly Signer[]): Signer[] {
+  return signers.filter((signer) => {
+    try {
+      // A key that does not derive its stated account is not this signer's,
+      // whatever it signed.
+      const digest = multiSigningHash(payment, signer.account);
+      return secp256k1.verify(signer.txnSignature, digest, signer.signingPubKey);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Assembles a quorum payment from chain data alone.
  *
  * Reads the request, the treasury's XRPL account and the published shares, and
@@ -150,7 +177,22 @@ export async function assembleQuorumPayment(
   }
 
   const payment = paymentFromRequest(requestId, request, treasury.xrplAccountId);
-  const { signedBlob, txHash } = assembleMultisigned(payment, toSigners(shares));
+
+  const usable = verifiedSigners(payment, toSigners(shares));
+  if (usable.length < shares.length) {
+    log.error("dropped shares that do not verify", {
+      requestId,
+      collected: shares.length,
+      verified: usable.length,
+    });
+  }
+  if (usable.length < request.quorumRequired) {
+    throw new Error(
+      `request ${requestId} has ${usable.length} verifying signatures of ${request.quorumRequired} required`,
+    );
+  }
+
+  const { signedBlob, txHash } = assembleMultisigned(payment, usable);
 
   return {
     requestId,

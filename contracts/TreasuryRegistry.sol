@@ -56,6 +56,12 @@ contract TreasuryRegistry {
         uint8 quorum;
         uint8 signerCount;
         SignerSetState state;
+        // The XRPL sequences the two handover transactions consumed. Recorded
+        // because they are consumed exactly as a payment's is, and a treasury
+        // that did not know about them would sign its first quorum payment
+        // against a number XRPL had already passed.
+        uint32 installSequence;
+        uint32 retireSequence;
         bytes32 installTxHash;
         bytes32 retireTxHash;
     }
@@ -131,9 +137,9 @@ contract TreasuryRegistry {
     /// @notice Emitted when every signer key a treasury asked for is bound.
     event SignerSetReady(uint256 indexed treasuryId, uint8 quorum, uint8 signerCount);
     /// @notice Emitted when the signer list is recorded as live on XRPL.
-    event SignerListInstalled(uint256 indexed treasuryId, bytes32 xrplTxHash);
+    event SignerListInstalled(uint256 indexed treasuryId, bytes32 xrplTxHash, uint32 sequence);
     /// @notice Emitted when the treasury's master key is recorded as retired.
-    event MasterKeyRetired(uint256 indexed treasuryId, bytes32 xrplTxHash);
+    event MasterKeyRetired(uint256 indexed treasuryId, bytes32 xrplTxHash, uint32 sequence);
 
     error TreasuryNotFound(uint256 treasuryId);
     error AmendmentNotFound(uint256 amendmentId);
@@ -196,6 +202,11 @@ contract TreasuryRegistry {
     /// @notice A step that happened on XRPL is recorded with the transaction
     /// that did it, so the claim can be checked against the ledger.
     error XrplTxHashRequired();
+
+    /// @notice A handover transaction cannot be signed or confirmed before the
+    /// treasury knows what sequence its XRPL account is at. It consumes one
+    /// exactly as a payment does.
+    error SequenceNotInitialised(uint256 treasuryId);
 
     /// @param policyEngine The policy engine to read rules and roles from.
     constructor(PolicyEngine policyEngine) {
@@ -373,10 +384,13 @@ contract TreasuryRegistry {
         SignerSet storage s = _signerSets[treasuryId];
         if (s.state != SignerSetState.Ready) revert WrongSignerSetState(s.state, SignerSetState.Ready);
 
+        uint32 consumed = _consumeSequence(treasuryId, t);
+
         s.state = SignerSetState.Installed;
         s.installTxHash = xrplTxHash;
+        s.installSequence = consumed;
 
-        emit SignerListInstalled(treasuryId, xrplTxHash);
+        emit SignerListInstalled(treasuryId, xrplTxHash, consumed);
     }
 
     /// @notice Records that the treasury's master key has been retired on XRPL.
@@ -397,10 +411,32 @@ contract TreasuryRegistry {
         SignerSet storage s = _signerSets[treasuryId];
         if (s.state != SignerSetState.Installed) revert WrongSignerSetState(s.state, SignerSetState.Installed);
 
+        uint32 consumed = _consumeSequence(treasuryId, t);
+
         s.state = SignerSetState.Locked;
         s.retireTxHash = xrplTxHash;
+        s.retireSequence = consumed;
 
-        emit MasterKeyRetired(treasuryId, xrplTxHash);
+        emit MasterKeyRetired(treasuryId, xrplTxHash, consumed);
+    }
+
+    /// @dev Advances past the sequence a handover transaction consumed.
+    ///
+    /// Deliberately does NOT set `sequenceConfirmed`. That flag means XRPL has
+    /// *provably* consumed a sequence, and only an FDC proof through
+    /// `advanceSequence` can establish that. A handover is confirmed by a policy
+    /// admin supplying the transaction hash, which is an assertion — so the
+    /// advance it causes stays correctable by `setInitialSequence`. If the
+    /// transaction never really landed, the treasury's next payment carries a
+    /// sequence XRPL has not reached, sits unvalidated until it expires, and is
+    /// released by a non-existence proof; the admin then reads the account's
+    /// real sequence off the ledger and records it again. Wrong, visible, and
+    /// recoverable — which is the most an assertion should ever buy.
+    function _consumeSequence(uint256 treasuryId, Treasury storage t) private returns (uint32 consumed) {
+        consumed = t.nextSequence;
+        if (consumed == 0) revert SequenceNotInitialised(treasuryId);
+        t.nextSequence = consumed + 1;
+        emit SequenceAdvanced(treasuryId, t.nextSequence);
     }
 
     /// @notice Reads a treasury's k-of-n arrangement.

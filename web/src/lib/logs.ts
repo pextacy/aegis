@@ -131,11 +131,11 @@ function describe(contract: AegisContract, eventName: string, args: Record<strin
     case "TreasuryRegistry.SignerListInstalled":
       return `Treasury ${args.treasuryId} handed its XRPL account to its signer set, in transaction ${shortHex(
         String(args.xrplTxHash),
-      )}.`;
+      )} at sequence ${args.sequence}.`;
     case "TreasuryRegistry.MasterKeyRetired":
       return `Treasury ${args.treasuryId} retired its master key in transaction ${shortHex(
         String(args.xrplTxHash),
-      )}. The quorum is now the only authority over the account.`;
+      )} at sequence ${args.sequence}. The quorum is now the only authority over the account.`;
 
     case "PaymentController.PaymentProposed":
       return `Request ${args.requestId}: ${formatXrp(asBigInt(args.amountDrops) ?? 0n)} XRP to ${destination(

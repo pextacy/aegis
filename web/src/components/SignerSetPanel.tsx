@@ -51,15 +51,7 @@ function StateBadge({ state }: { state: number }) {
   return <Badge>single key</Badge>;
 }
 
-export function SignerSetPanel({
-  treasury,
-  xrplSequence,
-  canAdmin,
-}: {
-  treasury: Treasury;
-  xrplSequence: number | null;
-  canAdmin: boolean;
-}) {
+export function SignerSetPanel({ treasury, canAdmin }: { treasury: Treasury; canAdmin: boolean }) {
   const set = useSignerSet(treasury.id);
   const signers = useSigners(treasury.id);
   const wiring = useWiring();
@@ -83,18 +75,21 @@ export function SignerSetPanel({
   const n = Number(signerCount);
   const validShape = Number.isInteger(k) && Number.isInteger(n) && k >= 1 && n >= k && n <= 32;
 
-  // Both setup transactions consume a sequence and need an expiry, for the same
-  // reason a payment does: one that cannot expire can never be proven absent.
-  const sequence = xrplSequence ?? treasury.nextSequence;
+  // Both handover transactions need an expiry, for the same reason a payment
+  // does: one that cannot expire can never be proven absent. The sequence comes
+  // from the registry, so what is checked here is only that it knows one.
   const expiry = ledger.data ? ledger.data + EXPIRY_LEDGERS : 0;
-  const canSend = canAdmin && senderReady && sequence > 0 && expiry > 0;
+  const canSend = canAdmin && senderReady && treasury.nextSequence > 0 && expiry > 0;
 
+  // The sequence is not passed: the sender reads it from the registry, because a
+  // handover consumes one exactly as a payment does and an operator choosing it
+  // is how a treasury signs against a number XRPL has already passed.
   const sendSetup = (kind: number) => {
     if (!senderAddress || !canSend) return;
     void tx.run({
       ...wiredHandles(senderAddress, senderAddress).instructionSender,
       functionName: "requestSetup",
-      args: [treasury.id, kind, sequence, expiry, 12n],
+      args: [treasury.id, kind, expiry, 12n],
     });
   };
 
@@ -131,14 +126,22 @@ export function SignerSetPanel({
         )}
 
         {set.data && set.data.installTxHash !== `0x${"00".repeat(32)}` && (
-          <KeyValue label="Signer list installed" hint="The XRPL transaction that handed the account to the quorum.">
+          <KeyValue
+            label="Signer list installed"
+            hint="The XRPL transaction that handed the account to the quorum, and the sequence it consumed."
+          >
             <XrplTxLink hash={set.data.installTxHash} />
+            <Mono className="ml-2 text-xs text-faint">seq {set.data.installSequence}</Mono>
           </KeyValue>
         )}
 
         {set.data && set.data.retireTxHash !== `0x${"00".repeat(32)}` && (
-          <KeyValue label="Master key retired" hint="After this, the quorum is the only authority over the account.">
+          <KeyValue
+            label="Master key retired"
+            hint="After this, the quorum is the only authority over the account."
+          >
             <XrplTxLink hash={set.data.retireTxHash} />
+            <Mono className="ml-2 text-xs text-faint">seq {set.data.retireSequence}</Mono>
           </KeyValue>
         )}
       </dl>

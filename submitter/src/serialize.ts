@@ -52,6 +52,9 @@ export const TF_FULLY_CANONICAL_SIG = 0x80000000;
 /** Transaction id prefix, "TXN\0". */
 const PREFIX_TRANSACTION_ID = Buffer.from([0x54, 0x58, 0x4e, 0x00]);
 
+/** Multi-signing hash prefix, "SMT\0". */
+const PREFIX_MULTI_SIGN = Buffer.from([0x53, 0x4d, 0x54, 0x00]);
+
 /** The largest blob the variable-length prefix can express. */
 const MAX_VL_LENGTH = 918744;
 
@@ -247,8 +250,15 @@ export function canonicalSigners(signers: readonly Signer[], account: Buffer): S
   return ordered;
 }
 
-/** Which signature-carrying fields a serialisation includes. */
-export type PaymentForm = "signed" | "multiSigned";
+/**
+ * Which signature-carrying fields a serialisation includes.
+ *
+ * `forMultiSigning` is the payload each of n signers hashes: SigningPubKey is
+ * the empty blob and neither a signature nor the Signers array appears, so
+ * every signer covers identical bytes and only the AccountID appended after
+ * them differs.
+ */
+export type PaymentForm = "signed" | "multiSigned" | "forMultiSigning";
 
 /**
  * Serialises a Payment.
@@ -273,7 +283,8 @@ export function serializePayment(payment: Payment, form: PaymentForm, signers: r
   fields.push(xrpAmountField(FIELD_AMOUNT, payment.amountDrops));
   fields.push(xrpAmountField(FIELD_FEE, payment.feeDrops));
 
-  const signingPubKey = form === "multiSigned" ? Buffer.alloc(0) : (payment.signingPubKey ?? Buffer.alloc(0));
+  const multi = form === "multiSigned" || form === "forMultiSigning";
+  const signingPubKey = multi ? Buffer.alloc(0) : (payment.signingPubKey ?? Buffer.alloc(0));
   fields.push(blobField(TYPE_BLOB, FIELD_SIGNING_PUB_KEY, signingPubKey));
 
   if (form === "signed") {
@@ -302,6 +313,19 @@ function sha512Half(prefix: Buffer, data: Buffer): Buffer {
 /** The XRPL transaction id of a signed blob. */
 export function transactionId(signedBlob: Buffer): Buffer {
   return sha512Half(PREFIX_TRANSACTION_ID, signedBlob);
+}
+
+/**
+ * The digest one signer signs.
+ *
+ * The signer's AccountID follows the transaction, which is what stops a
+ * signature collected for one signer being presented as another's: every signer
+ * covers the same transaction bytes and a different 20-byte tail.
+ */
+export function multiSigningHash(payment: Payment, signerAccount: Buffer): Buffer {
+  requireAccountId(signerAccount, "signer");
+  const body = serializePayment(payment, "forMultiSigning");
+  return sha512Half(PREFIX_MULTI_SIGN, Buffer.concat([body, signerAccount]));
 }
 
 /** A blob ready to submit, with the id XRPL will know it by. */

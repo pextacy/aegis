@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { encodeAbiParameters, encodeEventTopics } from "viem";
 import type { Address, Hex, Log } from "viem";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +10,8 @@ import type { Clients } from "../src/clients.js";
 import type { Config } from "../src/config.js";
 import { FileCursor } from "../src/cursor.js";
 import type { Settler, SignedPayment } from "../src/settle.js";
+import { paymentFromRequest } from "../src/multisign.js";
+import { multiSigningHash } from "../src/serialize.js";
 import { chunkRange, readSignedPayment, Watcher } from "../src/watcher.js";
 
 const CONTROLLER = "0xaEd2aCa19C6F54926F8482648A694E7cb62baA22" as Address;
@@ -81,34 +84,43 @@ function multiSignedLog(requestId: bigint, blockNumber: bigint, logIndex: number
   };
 }
 
-/** The chain reads the assembler makes, answered from a real reference. */
+/**
+ * The chain reads the assembler makes.
+ *
+ * The shares are signed here rather than copied from a vector, because the
+ * assembler verifies every one of them now. A fixture that did not really sign
+ * this payment is dropped, which is exactly what should happen to it.
+ */
+const QUORUM_REQUEST = {
+  treasuryId: 1n,
+  destinationAccountId: `0x${"350f40a56d86d57ed58408028117b8f29a99281c"}${"00".repeat(12)}` as Hex,
+  destinationTag: 96372801,
+  amountDrops: 10982337n,
+  sequence: 382435,
+  lastLedgerSequence: 106193253,
+  feeDrops: 50000n,
+  quorumRequired: 2,
+};
+const TREASURY_ACCOUNT = `0x${"8421a3546bbe20c59c18c9d03c3ed146e967520b"}${"00".repeat(12)}` as Hex;
+
+function quorumShares(requestId: bigint): unknown[] {
+  const payment = paymentFromRequest(requestId, QUORUM_REQUEST, TREASURY_ACCOUNT);
+  return [Buffer.from("11".repeat(32), "hex"), Buffer.from("22".repeat(32), "hex")].map((priv, i) => {
+    const account = Buffer.alloc(20, i + 1);
+    const sig = secp256k1.sign(multiSigningHash(payment, account), priv).toDERRawBytes();
+    return {
+      signerAccountId: `0x${account.toString("hex")}${"00".repeat(12)}`,
+      signerPubKey: `0x${Buffer.from(secp256k1.getPublicKey(priv, true)).toString("hex")}`,
+      signature: `0x${Buffer.from(sig).toString("hex")}`,
+    };
+  });
+}
+
 const QUORUM_READS: Record<string, unknown> = {
-  getRequest: {
-    treasuryId: 1n,
-    destinationAccountId: `0x${"350f40a56d86d57ed58408028117b8f29a99281c"}${"00".repeat(12)}`,
-    destinationTag: 96372801,
-    amountDrops: 10982337n,
-    sequence: 382435,
-    lastLedgerSequence: 106193253,
-    feeDrops: 50000n,
-    quorumRequired: 2,
-  },
+  getRequest: QUORUM_REQUEST,
   TREASURY_REGISTRY: "0x1111111111111111111111111111111111111111",
-  getTreasury: { xrplAccountId: `0x${"8421a3546bbe20c59c18c9d03c3ed146e967520b"}${"00".repeat(12)}` },
-  partialSignaturesOf: [
-    {
-      signerAccountId: `0x${"e6deed4ec3c93ab52c5334f33e645775fd5f58d7"}${"00".repeat(12)}`,
-      signerPubKey: "0x028a4e362a90b01687cf26f2351fdfd1725fe7638f341453a2601dc562ce83f91d",
-      signature:
-        "0x3045022100a42b08693b348f2f6a7e1cfd21f2c5ba0477c901fb1dbafa62ee96410abbc21002203588d202c8074bdb0f88a85143fe77089b354d452a6a284bae62fc720c2e5aa3",
-    },
-    {
-      signerAccountId: `0x${"ee218394f528741b2de1ff8b9922c2b2df23f4fb"}${"00".repeat(12)}`,
-      signerPubKey: "0x02c6478ef003b4cf203a1040e6784a5fee2cf5fea34ea7420e3ae1538c38bd26ba",
-      signature:
-        "0x3044022059080417c896697ee10484be72c0643c5f1d67426241665d0f5a34312a5a8a63022075af9844112fa3b83706b46fc3d7543250bb108e94b7c5038878bcd5847acbef",
-    },
-  ],
+  getTreasury: { xrplAccountId: TREASURY_ACCOUNT },
+  partialSignaturesOf: quorumShares(9n),
 };
 
 function watcherOver(

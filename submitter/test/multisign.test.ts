@@ -7,6 +7,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { encodeAbiParameters, keccak256 } from "viem";
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
@@ -18,9 +19,11 @@ import {
   paymentFromRequest,
   requestReference,
   toSigners,
+  verifiedSigners,
 } from "../src/multisign.js";
 import type { PartialSignature, QuorumRequest } from "../src/multisign.js";
-import { assembleMultisigned } from "../src/serialize.js";
+import { assembleMultisigned, multiSigningHash } from "../src/serialize.js";
+import type { Payment } from "../src/serialize.js";
 
 const CONTROLLER = "0xaEd2aCa19C6F54926F8482648A694E7cb62baA22" as Address;
 const REGISTRY = "0x1111111111111111111111111111111111111111" as Address;
@@ -57,11 +60,46 @@ const REQUEST: QuorumRequest = {
   quorumRequired: 2,
 };
 
-const SHARES: PartialSignature[] = vector.payment.signers.map((s) => ({
+/** The reference transaction's own shares, for the byte-compatibility checks. */
+const REFERENCE_SHARES: PartialSignature[] = vector.payment.signers.map((s) => ({
   signerAccountId: word(s.accountId),
   signerPubKey: `0x${s.signingPubKey.toLowerCase()}`,
   signature: `0x${s.txnSignature.toLowerCase()}`,
 }));
+
+/**
+ * Shares that genuinely signed a payment, produced here.
+ *
+ * The assembler verifies every share now, so a fixture has to be a real
+ * signature over the real payload — which is the point: before it verified,
+ * these tests passed with signatures that covered a different transaction.
+ *
+ * The account is chosen rather than derived from the key. Verification only
+ * needs the account the signer used when hashing, and that a key derives its
+ * stated account is the contract's check, tested there.
+ */
+const KEYS = [
+  Buffer.from("11".repeat(32), "hex"),
+  Buffer.from("22".repeat(32), "hex"),
+  Buffer.from("33".repeat(32), "hex"),
+];
+
+function sharesFor(payment: Payment, count = 2): PartialSignature[] {
+  return KEYS.slice(0, count).map((priv, i) => {
+    const account = Buffer.alloc(20, i + 1);
+    const digest = multiSigningHash(payment, account);
+    const sig = secp256k1.sign(digest, priv).toDERRawBytes();
+    return {
+      signerAccountId: `0x${account.toString("hex")}${"00".repeat(12)}`,
+      signerPubKey: `0x${Buffer.from(secp256k1.getPublicKey(priv, true)).toString("hex")}`,
+      signature: `0x${Buffer.from(sig).toString("hex")}`,
+    } as PartialSignature;
+  });
+}
+
+/** The payment the fake chain describes, for request id 7. */
+const REQUEST_PAYMENT = paymentFromRequest(7n, REQUEST, word(vector.payment.accountId));
+const SHARES: PartialSignature[] = sharesFor(REQUEST_PAYMENT);
 
 /** A public client answering the four reads the assembler makes. */
 function clientsFor(overrides: {
@@ -136,7 +174,7 @@ describe("assembling from chain data", () => {
     // Aegis' own memo; the memo path is covered above and in serialize.test.ts.
     const { memos: _memos, ...withoutMemo } = paymentFromRequest(1n, REQUEST, word(vector.payment.accountId));
     const payment = withoutMemo;
-    const { signedBlob, txHash } = assembleMultisigned(payment, toSigners(SHARES));
+    const { signedBlob, txHash } = assembleMultisigned(payment, toSigners(REFERENCE_SHARES));
 
     expect(signedBlob.toString("hex").toUpperCase()).toBe(vector.payment.blob);
     expect(txHash.toString("hex").toUpperCase()).toBe(vector.payment.hash);
@@ -179,6 +217,49 @@ describe("assembling from chain data", () => {
       7n,
     );
     expect(payment.signedBlob.length).toBeGreaterThan(2);
+  });
+
+  /**
+   * The hole the contract cannot close: it checks a share's key belongs to a
+   * bound signer but not that the signature covers anything, because that needs
+   * secp256k1 over a SHA-512 half and there is no precompile. A relayer can
+   * therefore publish a well-formed signature over nothing, and XRPL charges for
+   * the transaction it then refuses.
+   */
+  it("drops a share that is well formed but signed nothing", async () => {
+    const forged: PartialSignature[] = [
+      ...SHARES,
+      {
+        signerAccountId: `0x${"ab".repeat(20)}${"00".repeat(12)}`,
+        signerPubKey: SHARES[0]!.signerPubKey,
+        signature: SHARES[0]!.signature,
+      },
+    ];
+
+    // Three shares arrive, two verify, the quorum of two is still met.
+    const payment = await assembleQuorumPayment(clientsFor({ shares: forged }), CONFIG, 7n);
+    expect(payment.signedBlob.includes("ab".repeat(20))).toBe(false);
+  });
+
+  it("refuses when dropping the unverifiable shares takes it under the quorum", async () => {
+    const mostlyForged: PartialSignature[] = [
+      SHARES[0]!,
+      { ...SHARES[1]!, signature: `0x${"30".repeat(70)}` },
+    ];
+    await expect(
+      assembleQuorumPayment(clientsFor({ shares: mostlyForged }), CONFIG, 7n),
+    ).rejects.toThrow(/verifying signatures/);
+  });
+
+  /**
+   * The same third-party proof the enclave's serialiser has: two signatures made
+   * by other software, over a transaction XRPL validated, verifying against the
+   * digest computed here.
+   */
+  it("verifies the reference transaction's real signatures", () => {
+    const { memos: _m, ...payment } = paymentFromRequest(1n, REQUEST, word(vector.payment.accountId));
+    const kept = verifiedSigners(payment, toSigners(REFERENCE_SHARES));
+    expect(kept).toHaveLength(REFERENCE_SHARES.length);
   });
 
   it("refuses a treasury whose account is not bound", async () => {

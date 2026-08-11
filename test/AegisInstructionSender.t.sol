@@ -410,7 +410,7 @@ contract AegisInstructionSenderTest is Test {
         _readySignerSet(2, 3);
 
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 900_000, 12);
 
         TeeExtensionRegistryStub.Sent memory sent = extRegistry.lastSent();
         assertEq(sent.opCommand, bytes32("SETUP"));
@@ -420,9 +420,11 @@ contract AegisInstructionSenderTest is Test {
         assertEq(req.kind, 0);
         assertEq(req.quorum, 2);
         assertEq(req.signerAccountIds.length, 3);
+        // The sequence came from the registry, not from the caller.
+        assertEq(req.sequence, START_SEQUENCE, "a handover signs at the sequence the treasury believes in");
         assertEq(
             req.setupDigest,
-            sender.setupDigest(treasuryId, 0, 2, req.signerAccountIds, 7, 900_000, 12),
+            sender.setupDigest(treasuryId, 0, 2, req.signerAccountIds, START_SEQUENCE, 900_000, 12),
             "the digest describes the fields that were sent"
         );
     }
@@ -440,7 +442,7 @@ contract AegisInstructionSenderTest is Test {
             )
         );
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 900_000, 12);
     }
 
     /// @dev Retiring the master key before the list is live would leave an
@@ -455,14 +457,14 @@ contract AegisInstructionSenderTest is Test {
             )
         );
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_RETIRE, 8, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_RETIRE, 900_000, 12);
     }
 
     function test_retirementCarriesNoSignerList() public {
         _installSignerSet(2, 3);
 
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_RETIRE, 8, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_RETIRE, 900_000, 12);
 
         AegisInstructionSender.SetupRequest memory req =
             abi.decode(extRegistry.lastSent().message, (AegisInstructionSender.SetupRequest));
@@ -475,21 +477,21 @@ contract AegisInstructionSenderTest is Test {
         _readySignerSet(2, 3);
         vm.expectRevert(abi.encodeWithSelector(AegisInstructionSender.UnknownSetupKind.selector, uint8(7)));
         vm.prank(admin);
-        sender.requestSetup(treasuryId, 7, 7, 900_000, 12);
+        sender.requestSetup(treasuryId, 7, 900_000, 12);
     }
 
     function test_setupRefusesATransactionThatCouldNeverExpire() public {
         _readySignerSet(2, 3);
         vm.expectRevert(AegisInstructionSender.LastLedgerSequenceRequired.selector);
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 0, 12);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 0, 12);
     }
 
     function test_setupResultPublishesTheSignedTransaction() public {
         _readySignerSet(2, 3);
 
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 900_000, 12);
         bytes32 id = _lastInstructionId(bytes32("SETUP"));
 
         bytes memory blob = hex"12000C220001000024000000012023000000";
@@ -505,7 +507,7 @@ contract AegisInstructionSenderTest is Test {
         _readySignerSet(2, 3);
 
         vm.prank(admin);
-        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 7, 900_000, 12);
+        sender.requestSetup(treasuryId, KIND_SIGNER_LIST, 900_000, 12);
         bytes32 id = _lastInstructionId(bytes32("SETUP"));
 
         vm.startPrank(submitter);
@@ -575,6 +577,12 @@ contract AegisInstructionSenderTest is Test {
 
     function _configureSignerSet(uint8 quorum, uint8 signerCount) private {
         if (registry.getTreasury(treasuryId).xrplAccountId == bytes32(0)) _bindAccount();
+        // A handover transaction consumes an XRPL sequence exactly as a payment
+        // does, so the treasury has to know what its account is at first.
+        if (registry.nextSequenceOf(treasuryId) == 0) {
+            vm.prank(admin);
+            registry.setInitialSequence(treasuryId, START_SEQUENCE);
+        }
         vm.prank(admin);
         registry.configureSignerSet(treasuryId, quorum, signerCount);
     }

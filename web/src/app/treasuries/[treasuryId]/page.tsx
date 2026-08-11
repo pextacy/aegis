@@ -119,11 +119,7 @@ export default function TreasuryPage() {
       )}
 
       {xrplAddress && (
-        <SignerSetPanel
-          treasury={data}
-          xrplSequence={xrplAccount.data ? xrplAccount.data.sequence : null}
-          canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)}
-        />
+        <SignerSetPanel treasury={data} canAdmin={hasRole(mask, ROLE_POLICY_ADMIN)} />
       )}
 
       {policy.data && committed.data !== undefined && (
