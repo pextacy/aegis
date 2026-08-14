@@ -9,3 +9,5 @@ tsconfig.tsbuildinfo
 # git — the root .gitignore already covers .env*, this repeats it where it is
 # easy to see.
 .env.local
+.vercel
+.env*
