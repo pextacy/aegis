@@ -66,8 +66,13 @@ elif grep -q 'host = "indexer-db"' "$TOML"; then
     else
         BEHIND=$(docker exec "$DB_CID" mysql -uroot -proot flare_ftso_indexer -N -e \
             "SELECT (SELECT \`index\` FROM states WHERE name='last_chain_block') - (SELECT \`index\` FROM states WHERE name='last_database_block');" 2>/dev/null)
+        # A freshly started indexer answers NULL until it has written both state
+        # rows, and an unquoted NULL inside (( )) is read as a variable name —
+        # which under `set -u` aborts the whole check rather than reporting it.
         if [[ -z "$BEHIND" ]]; then
             blocked "P0-6  local indexer database not answering — ./scripts/indexer.sh logs"
+        elif [[ ! "$BEHIND" =~ ^-?[0-9]+$ ]]; then
+            blocked "P0-6  local indexer is still starting up — ./scripts/indexer.sh logs"
         elif (( BEHIND > 60 )); then
             blocked "P0-6  local indexer is $BEHIND blocks behind — still catching up"
         else
