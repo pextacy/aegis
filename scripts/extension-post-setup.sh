@@ -36,6 +36,15 @@
 #   registers itself, the wiring has to happen here — not in extension-setup.sh.
 set -euo pipefail
 
+# Foundry auto-loads the project's .env, which carries CHAIN=coston2 — a name
+# the scaffold's own scripts and docker compose understand and `cast` does not:
+# its Coston2 is called `flare-coston2`, so every cast invocation here died with
+# "invalid value 'coston2' for --chain". Exported values win over dotenv, so
+# this pins the numeric id. The RPC url is passed explicitly on every call, so
+# the flag decides nothing either way.
+export CHAIN=114
+
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 

@@ -10,14 +10,14 @@
 [indexer]
 mode = "fsp"
 history_epochs = 0
-rpc_concurrency = 8
+rpc_concurrency = 4
 batch_size = 100
 # The public Coston2 RPC caps eth_getLogs at 30 blocks. Setting this higher
 # fails every log request with "requested too many blocks ... maximum is 30".
 # Raise it only against a dedicated node.
 log_range = 30
 new_block_check_millis = 1000
-confirmations = 1
+confirmations = 0
 no_new_blocks_delay_warning = 120
 
 [logger]
